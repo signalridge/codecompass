@@ -1,0 +1,495 @@
+use codecompass_core::error::StateError;
+use codecompass_core::types::JobStatus;
+use rusqlite::{Connection, params};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexJob {
+    pub job_id: String,
+    pub project_id: String,
+    pub r#ref: String,
+    pub mode: String,
+    pub head_commit: Option<String>,
+    pub sync_id: Option<String>,
+    pub status: String,
+    pub changed_files: i64,
+    pub duration_ms: Option<i64>,
+    pub error_message: Option<String>,
+    pub retry_count: i32,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Create a new index job.
+pub fn create_job(conn: &Connection, job: &IndexJob) -> Result<(), StateError> {
+    conn.execute(
+        "INSERT INTO index_jobs (job_id, project_id, \"ref\", mode, head_commit, sync_id, status, changed_files, duration_ms, error_message, retry_count, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        params![
+            job.job_id,
+            job.project_id,
+            job.r#ref,
+            job.mode,
+            job.head_commit,
+            job.sync_id,
+            job.status,
+            job.changed_files,
+            job.duration_ms,
+            job.error_message,
+            job.retry_count,
+            job.created_at,
+            job.updated_at,
+        ],
+    ).map_err(StateError::sqlite)?;
+    Ok(())
+}
+
+/// Update job status.
+pub fn update_job_status(
+    conn: &Connection,
+    job_id: &str,
+    status: JobStatus,
+    changed_files: Option<i64>,
+    duration_ms: Option<i64>,
+    error_message: Option<&str>,
+    updated_at: &str,
+) -> Result<(), StateError> {
+    conn.execute(
+        "UPDATE index_jobs SET status = ?1, changed_files = COALESCE(?2, changed_files), duration_ms = COALESCE(?3, duration_ms), error_message = COALESCE(?4, error_message), updated_at = ?5 WHERE job_id = ?6",
+        params![
+            status.as_str(),
+            changed_files,
+            duration_ms,
+            error_message,
+            updated_at,
+            job_id,
+        ],
+    ).map_err(StateError::sqlite)?;
+    Ok(())
+}
+
+/// Get the active (running) job for a project, if any.
+pub fn get_active_job(conn: &Connection, project_id: &str) -> Result<Option<IndexJob>, StateError> {
+    let mut stmt = conn.prepare(
+        "SELECT job_id, project_id, \"ref\", mode, head_commit, sync_id, status, changed_files, duration_ms, error_message, retry_count, created_at, updated_at
+         FROM index_jobs WHERE project_id = ?1 AND status IN ('queued', 'running', 'validating')
+         ORDER BY created_at DESC LIMIT 1"
+    ).map_err(StateError::sqlite)?;
+
+    let result = stmt.query_row(params![project_id], |row| {
+        Ok(IndexJob {
+            job_id: row.get(0)?,
+            project_id: row.get(1)?,
+            r#ref: row.get(2)?,
+            mode: row.get(3)?,
+            head_commit: row.get(4)?,
+            sync_id: row.get(5)?,
+            status: row.get(6)?,
+            changed_files: row.get(7)?,
+            duration_ms: row.get(8)?,
+            error_message: row.get(9)?,
+            retry_count: row.get(10)?,
+            created_at: row.get(11)?,
+            updated_at: row.get(12)?,
+        })
+    });
+
+    match result {
+        Ok(job) => Ok(Some(job)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(StateError::sqlite(e)),
+    }
+}
+
+/// Get recent jobs for a project.
+pub fn get_recent_jobs(
+    conn: &Connection,
+    project_id: &str,
+    limit: usize,
+) -> Result<Vec<IndexJob>, StateError> {
+    let mut stmt = conn.prepare(
+        "SELECT job_id, project_id, \"ref\", mode, head_commit, sync_id, status, changed_files, duration_ms, error_message, retry_count, created_at, updated_at
+         FROM index_jobs WHERE project_id = ?1
+         ORDER BY created_at DESC LIMIT ?2"
+    ).map_err(StateError::sqlite)?;
+
+    let jobs = stmt
+        .query_map(params![project_id, limit], |row| {
+            Ok(IndexJob {
+                job_id: row.get(0)?,
+                project_id: row.get(1)?,
+                r#ref: row.get(2)?,
+                mode: row.get(3)?,
+                head_commit: row.get(4)?,
+                sync_id: row.get(5)?,
+                status: row.get(6)?,
+                changed_files: row.get(7)?,
+                duration_ms: row.get(8)?,
+                error_message: row.get(9)?,
+                retry_count: row.get(10)?,
+                created_at: row.get(11)?,
+                updated_at: row.get(12)?,
+            })
+        })
+        .map_err(StateError::sqlite)?;
+
+    jobs.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| StateError::Sqlite(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db;
+    use crate::schema;
+    use codecompass_core::types::Project;
+    use tempfile::tempdir;
+
+    fn setup_test_db() -> Connection {
+        let dir = tempdir().unwrap();
+        let conn = db::open_connection(&dir.path().join("test.db")).unwrap();
+        schema::create_tables(&conn).unwrap();
+        conn
+    }
+
+    /// Insert a project so that the foreign key constraint on index_jobs is satisfied.
+    fn insert_test_project(conn: &Connection, project_id: &str) {
+        let project = Project {
+            project_id: project_id.to_string(),
+            repo_root: format!("/home/user/{}", project_id),
+            display_name: None,
+            default_ref: "main".to_string(),
+            vcs_mode: true,
+            schema_version: 1,
+            parser_version: 1,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+        crate::project::create_project(conn, &project).unwrap();
+    }
+
+    fn sample_job(project_id: &str) -> IndexJob {
+        IndexJob {
+            job_id: "job_001".to_string(),
+            project_id: project_id.to_string(),
+            r#ref: "main".to_string(),
+            mode: "full".to_string(),
+            head_commit: Some("abc123".to_string()),
+            sync_id: Some("sync_001".to_string()),
+            status: JobStatus::Queued.as_str().to_string(),
+            changed_files: 42,
+            duration_ms: None,
+            error_message: None,
+            retry_count: 0,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_create_and_get_active_job() {
+        let conn = setup_test_db();
+        insert_test_project(&conn, "proj_1");
+
+        let job = sample_job("proj_1");
+        create_job(&conn, &job).unwrap();
+
+        let active = get_active_job(&conn, "proj_1").unwrap();
+        assert!(active.is_some());
+        let active = active.unwrap();
+        assert_eq!(active.job_id, "job_001");
+        assert_eq!(active.project_id, "proj_1");
+        assert_eq!(active.r#ref, "main");
+        assert_eq!(active.mode, "full");
+        assert_eq!(active.head_commit, Some("abc123".to_string()));
+        assert_eq!(active.sync_id, Some("sync_001".to_string()));
+        assert_eq!(active.status, "queued");
+        assert_eq!(active.changed_files, 42);
+        assert!(active.duration_ms.is_none());
+        assert!(active.error_message.is_none());
+        assert_eq!(active.retry_count, 0);
+    }
+
+    #[test]
+    fn test_get_active_job_returns_none_when_no_jobs() {
+        let conn = setup_test_db();
+        insert_test_project(&conn, "proj_1");
+
+        let active = get_active_job(&conn, "proj_1").unwrap();
+        assert!(active.is_none());
+    }
+
+    #[test]
+    fn test_get_active_job_returns_none_for_completed_jobs() {
+        let conn = setup_test_db();
+        insert_test_project(&conn, "proj_1");
+
+        let mut job = sample_job("proj_1");
+        job.status = JobStatus::Published.as_str().to_string();
+        create_job(&conn, &job).unwrap();
+
+        let active = get_active_job(&conn, "proj_1").unwrap();
+        assert!(active.is_none());
+    }
+
+    #[test]
+    fn test_get_active_job_returns_running_job() {
+        let conn = setup_test_db();
+        insert_test_project(&conn, "proj_1");
+
+        let mut job = sample_job("proj_1");
+        job.status = JobStatus::Running.as_str().to_string();
+        create_job(&conn, &job).unwrap();
+
+        let active = get_active_job(&conn, "proj_1").unwrap();
+        assert!(active.is_some());
+        assert_eq!(active.unwrap().status, "running");
+    }
+
+    #[test]
+    fn test_get_active_job_returns_validating_job() {
+        let conn = setup_test_db();
+        insert_test_project(&conn, "proj_1");
+
+        let mut job = sample_job("proj_1");
+        job.status = JobStatus::Validating.as_str().to_string();
+        create_job(&conn, &job).unwrap();
+
+        let active = get_active_job(&conn, "proj_1").unwrap();
+        assert!(active.is_some());
+        assert_eq!(active.unwrap().status, "validating");
+    }
+
+    #[test]
+    fn test_update_job_status() {
+        let conn = setup_test_db();
+        insert_test_project(&conn, "proj_1");
+
+        let job = sample_job("proj_1");
+        create_job(&conn, &job).unwrap();
+
+        update_job_status(
+            &conn,
+            "job_001",
+            JobStatus::Running,
+            None,
+            None,
+            None,
+            "2026-01-01T01:00:00Z",
+        )
+        .unwrap();
+
+        let active = get_active_job(&conn, "proj_1").unwrap().unwrap();
+        assert_eq!(active.status, "running");
+        assert_eq!(active.updated_at, "2026-01-01T01:00:00Z");
+    }
+
+    #[test]
+    fn test_update_job_status_to_published() {
+        let conn = setup_test_db();
+        insert_test_project(&conn, "proj_1");
+
+        let job = sample_job("proj_1");
+        create_job(&conn, &job).unwrap();
+
+        update_job_status(
+            &conn,
+            "job_001",
+            JobStatus::Published,
+            Some(100),
+            Some(5000),
+            None,
+            "2026-01-01T02:00:00Z",
+        )
+        .unwrap();
+
+        // Should no longer appear as active
+        let active = get_active_job(&conn, "proj_1").unwrap();
+        assert!(active.is_none());
+
+        // But should appear in recent jobs
+        let recent = get_recent_jobs(&conn, "proj_1", 10).unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].status, "published");
+        assert_eq!(recent[0].changed_files, 100);
+        assert_eq!(recent[0].duration_ms, Some(5000));
+    }
+
+    #[test]
+    fn test_update_job_status_with_error() {
+        let conn = setup_test_db();
+        insert_test_project(&conn, "proj_1");
+
+        let job = sample_job("proj_1");
+        create_job(&conn, &job).unwrap();
+
+        update_job_status(
+            &conn,
+            "job_001",
+            JobStatus::Failed,
+            None,
+            Some(1500),
+            Some("disk full"),
+            "2026-01-01T03:00:00Z",
+        )
+        .unwrap();
+
+        let recent = get_recent_jobs(&conn, "proj_1", 10).unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].status, "failed");
+        assert_eq!(recent[0].error_message, Some("disk full".to_string()));
+        assert_eq!(recent[0].duration_ms, Some(1500));
+    }
+
+    #[test]
+    fn test_get_recent_jobs_ordering() {
+        let conn = setup_test_db();
+        insert_test_project(&conn, "proj_1");
+
+        // Insert jobs with different created_at timestamps
+        for i in 0..5 {
+            let mut job = sample_job("proj_1");
+            job.job_id = format!("job_{:03}", i);
+            job.status = JobStatus::Published.as_str().to_string();
+            job.created_at = format!("2026-01-0{}T00:00:00Z", i + 1);
+            create_job(&conn, &job).unwrap();
+        }
+
+        let recent = get_recent_jobs(&conn, "proj_1", 3).unwrap();
+        assert_eq!(recent.len(), 3);
+        // Most recent first (ORDER BY created_at DESC)
+        assert_eq!(recent[0].job_id, "job_004");
+        assert_eq!(recent[1].job_id, "job_003");
+        assert_eq!(recent[2].job_id, "job_002");
+    }
+
+    #[test]
+    fn test_get_recent_jobs_empty() {
+        let conn = setup_test_db();
+        insert_test_project(&conn, "proj_1");
+
+        let recent = get_recent_jobs(&conn, "proj_1", 10).unwrap();
+        assert!(recent.is_empty());
+    }
+
+    #[test]
+    fn test_get_recent_jobs_limit() {
+        let conn = setup_test_db();
+        insert_test_project(&conn, "proj_1");
+
+        for i in 0..5 {
+            let mut job = sample_job("proj_1");
+            job.job_id = format!("job_{:03}", i);
+            job.created_at = format!("2026-01-0{}T00:00:00Z", i + 1);
+            create_job(&conn, &job).unwrap();
+        }
+
+        let recent = get_recent_jobs(&conn, "proj_1", 2).unwrap();
+        assert_eq!(recent.len(), 2);
+    }
+
+    #[test]
+    fn test_get_recent_jobs_scoped_to_project() {
+        let conn = setup_test_db();
+        insert_test_project(&conn, "proj_1");
+        insert_test_project(&conn, "proj_2");
+
+        let job1 = sample_job("proj_1");
+        create_job(&conn, &job1).unwrap();
+
+        let mut job2 = sample_job("proj_2");
+        job2.job_id = "job_002".to_string();
+        create_job(&conn, &job2).unwrap();
+
+        let recent = get_recent_jobs(&conn, "proj_1", 10).unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].project_id, "proj_1");
+    }
+
+    #[test]
+    fn test_create_job_duplicate_id_fails() {
+        let conn = setup_test_db();
+        insert_test_project(&conn, "proj_1");
+
+        let job = sample_job("proj_1");
+        create_job(&conn, &job).unwrap();
+
+        let result = create_job(&conn, &job);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_job_with_no_optional_fields() {
+        let conn = setup_test_db();
+        insert_test_project(&conn, "proj_1");
+
+        let job = IndexJob {
+            job_id: "job_min".to_string(),
+            project_id: "proj_1".to_string(),
+            r#ref: "main".to_string(),
+            mode: "incremental".to_string(),
+            head_commit: None,
+            sync_id: None,
+            status: JobStatus::Queued.as_str().to_string(),
+            changed_files: 0,
+            duration_ms: None,
+            error_message: None,
+            retry_count: 0,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+
+        create_job(&conn, &job).unwrap();
+
+        let active = get_active_job(&conn, "proj_1").unwrap().unwrap();
+        assert!(active.head_commit.is_none());
+        assert!(active.sync_id.is_none());
+        assert!(active.duration_ms.is_none());
+        assert!(active.error_message.is_none());
+    }
+
+    #[test]
+    fn test_get_active_job_returns_most_recent() {
+        let conn = setup_test_db();
+        insert_test_project(&conn, "proj_1");
+
+        // Insert two active (queued) jobs with different timestamps
+        let mut job1 = sample_job("proj_1");
+        job1.job_id = "job_old".to_string();
+        job1.created_at = "2026-01-01T00:00:00Z".to_string();
+        create_job(&conn, &job1).unwrap();
+
+        let mut job2 = sample_job("proj_1");
+        job2.job_id = "job_new".to_string();
+        job2.created_at = "2026-01-02T00:00:00Z".to_string();
+        create_job(&conn, &job2).unwrap();
+
+        let active = get_active_job(&conn, "proj_1").unwrap().unwrap();
+        // Should return the most recently created active job
+        assert_eq!(active.job_id, "job_new");
+    }
+
+    #[test]
+    fn test_update_preserves_changed_files_when_none() {
+        let conn = setup_test_db();
+        insert_test_project(&conn, "proj_1");
+
+        let job = sample_job("proj_1"); // changed_files = 42
+        create_job(&conn, &job).unwrap();
+
+        // Update status but pass None for changed_files -- COALESCE should keep the original
+        update_job_status(
+            &conn,
+            "job_001",
+            JobStatus::Running,
+            None,
+            None,
+            None,
+            "2026-01-01T01:00:00Z",
+        )
+        .unwrap();
+
+        let recent = get_recent_jobs(&conn, "proj_1", 1).unwrap();
+        assert_eq!(recent[0].changed_files, 42);
+    }
+}
