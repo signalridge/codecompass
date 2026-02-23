@@ -1,0 +1,358 @@
+use serde::{Deserialize, Serialize};
+
+/// A registered workspace/project.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Project {
+    pub project_id: String,
+    pub repo_root: String,
+    pub display_name: Option<String>,
+    pub default_ref: String,
+    pub vcs_mode: bool,
+    pub schema_version: u32,
+    pub parser_version: u32,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Symbol kinds recognized by CodeCompass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SymbolKind {
+    Function,
+    Method,
+    Struct,
+    Class,
+    Enum,
+    Trait,
+    Interface,
+    Constant,
+    Variable,
+    TypeAlias,
+    Module,
+    Import,
+}
+
+impl SymbolKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Function => "function",
+            Self::Method => "method",
+            Self::Struct => "struct",
+            Self::Class => "class",
+            Self::Enum => "enum",
+            Self::Trait => "trait",
+            Self::Interface => "interface",
+            Self::Constant => "constant",
+            Self::Variable => "variable",
+            Self::TypeAlias => "type_alias",
+            Self::Module => "module",
+            Self::Import => "import",
+        }
+    }
+
+    pub fn parse_kind(s: &str) -> Option<Self> {
+        match s {
+            "function" | "fn" | "func" | "def" => Some(Self::Function),
+            "method" => Some(Self::Method),
+            "struct" => Some(Self::Struct),
+            "class" => Some(Self::Class),
+            "enum" => Some(Self::Enum),
+            "trait" => Some(Self::Trait),
+            "interface" => Some(Self::Interface),
+            "constant" | "const" => Some(Self::Constant),
+            "variable" | "var" => Some(Self::Variable),
+            "type_alias" | "type" => Some(Self::TypeAlias),
+            "module" | "mod" => Some(Self::Module),
+            "import" | "use" => Some(Self::Import),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for SymbolKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A symbol definition extracted from source code.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SymbolRecord {
+    pub repo: String,
+    pub r#ref: String,
+    pub commit: Option<String>,
+    pub path: String,
+    pub language: String,
+    pub symbol_id: String,
+    pub symbol_stable_id: String,
+    pub name: String,
+    pub qualified_name: String,
+    pub kind: SymbolKind,
+    pub signature: Option<String>,
+    pub line_start: u32,
+    pub line_end: u32,
+    pub parent_symbol_id: Option<String>,
+    pub visibility: Option<String>,
+    pub content: Option<String>,
+}
+
+/// A code snippet (function body, class body) for full-text search.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnippetRecord {
+    pub repo: String,
+    pub r#ref: String,
+    pub commit: Option<String>,
+    pub path: String,
+    pub language: String,
+    pub chunk_type: String,
+    pub imports: Option<String>,
+    pub line_start: u32,
+    pub line_end: u32,
+    pub content: String,
+}
+
+/// A source file record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileRecord {
+    pub repo: String,
+    pub r#ref: String,
+    pub commit: Option<String>,
+    pub path: String,
+    pub filename: String,
+    pub language: String,
+    pub content_hash: String,
+    pub size_bytes: u64,
+    pub updated_at: String,
+    pub content_head: Option<String>,
+}
+
+/// Query intent classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryIntent {
+    Symbol,
+    Path,
+    Error,
+    NaturalLanguage,
+}
+
+/// Ref scope for queries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefScope {
+    pub r#ref: String,
+    pub is_explicit: bool,
+}
+
+impl RefScope {
+    pub fn live() -> Self {
+        Self {
+            r#ref: crate::constants::REF_LIVE.to_string(),
+            is_explicit: false,
+        }
+    }
+
+    pub fn explicit(r#ref: impl Into<String>) -> Self {
+        Self {
+            r#ref: r#ref.into(),
+            is_explicit: true,
+        }
+    }
+}
+
+/// Freshness status of the index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FreshnessStatus {
+    Fresh,
+    Stale,
+    Syncing,
+}
+
+/// Indexing status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexingStatus {
+    Idle,
+    Indexing,
+    PartialAvailable,
+}
+
+/// Result completeness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResultCompleteness {
+    Complete,
+    Partial,
+}
+
+/// Schema compatibility status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SchemaStatus {
+    Compatible,
+    NotIndexed,
+    ReindexRequired,
+    CorruptManifest,
+}
+
+/// Index job status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobStatus {
+    Queued,
+    Running,
+    Validating,
+    Published,
+    Failed,
+    RolledBack,
+}
+
+impl JobStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Validating => "validating",
+            Self::Published => "published",
+            Self::Failed => "failed",
+            Self::RolledBack => "rolled_back",
+        }
+    }
+}
+
+/// Generate project_id from repo root path.
+/// Uses blake3 hash of the canonical path, truncated to 16 hex characters.
+pub fn generate_project_id(repo_root: &str) -> String {
+    let canonical =
+        std::fs::canonicalize(repo_root).unwrap_or_else(|_| std::path::PathBuf::from(repo_root));
+    let hash = blake3::hash(canonical.to_string_lossy().as_bytes());
+    hash.to_hex()[..16].to_string()
+}
+
+/// Compute symbol_stable_id using blake3.
+/// Format: blake3("stable_id:v1|{language}|{kind}|{qualified_name}|{normalized_signature}")
+pub fn compute_symbol_stable_id(
+    language: &str,
+    kind: &SymbolKind,
+    qualified_name: &str,
+    signature: Option<&str>,
+) -> String {
+    let input = format!(
+        "{}|{}|{}|{}|{}",
+        crate::constants::STABLE_ID_VERSION,
+        language,
+        kind.as_str(),
+        qualified_name,
+        signature.unwrap_or("")
+    );
+    let hash = blake3::hash(input.as_bytes());
+    hash.to_hex().to_string()
+}
+
+/// Compute symbol_id (ref-local, changes on line movement).
+/// Format: blake3("{repo}|{ref}|{path}|{kind}|{line_start}|{name}")
+pub fn compute_symbol_id(
+    repo: &str,
+    r#ref: &str,
+    path: &str,
+    kind: &SymbolKind,
+    line_start: u32,
+    name: &str,
+) -> String {
+    let input = format!(
+        "{}|{}|{}|{}|{}|{}",
+        repo,
+        r#ref,
+        path,
+        kind.as_str(),
+        line_start,
+        name
+    );
+    let hash = blake3::hash(input.as_bytes());
+    hash.to_hex().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_symbol_stable_id_line_independence() {
+        // Same symbol at different lines should produce same stable_id
+        let id1 = compute_symbol_stable_id(
+            "rust",
+            &SymbolKind::Function,
+            "auth::validate_token",
+            Some("fn(token: &str) -> Result<Claims>"),
+        );
+        let id2 = compute_symbol_stable_id(
+            "rust",
+            &SymbolKind::Function,
+            "auth::validate_token",
+            Some("fn(token: &str) -> Result<Claims>"),
+        );
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn test_symbol_stable_id_signature_change() {
+        // Different signature should produce different stable_id
+        let id1 = compute_symbol_stable_id(
+            "rust",
+            &SymbolKind::Function,
+            "auth::validate_token",
+            Some("fn(token: &str) -> Result<Claims>"),
+        );
+        let id2 = compute_symbol_stable_id(
+            "rust",
+            &SymbolKind::Function,
+            "auth::validate_token",
+            Some("fn(token: &str, key: &[u8]) -> Result<Claims>"),
+        );
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn test_symbol_stable_id_no_signature() {
+        let id = compute_symbol_stable_id("rust", &SymbolKind::Struct, "auth::Claims", None);
+        assert!(!id.is_empty());
+        assert_eq!(id.len(), 64); // blake3 hex
+    }
+
+    #[test]
+    fn test_symbol_id_changes_with_line() {
+        let id1 = compute_symbol_id(
+            "repo",
+            "main",
+            "src/lib.rs",
+            &SymbolKind::Function,
+            10,
+            "foo",
+        );
+        let id2 = compute_symbol_id(
+            "repo",
+            "main",
+            "src/lib.rs",
+            &SymbolKind::Function,
+            20,
+            "foo",
+        );
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn test_symbol_kind_roundtrip() {
+        for kind in [
+            SymbolKind::Function,
+            SymbolKind::Method,
+            SymbolKind::Struct,
+            SymbolKind::Class,
+            SymbolKind::Enum,
+            SymbolKind::Trait,
+            SymbolKind::Interface,
+            SymbolKind::Constant,
+        ] {
+            assert_eq!(SymbolKind::parse_kind(kind.as_str()), Some(kind));
+        }
+    }
+}

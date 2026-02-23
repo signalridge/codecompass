@@ -1,0 +1,37 @@
+[workspace]
+members = [
+    "crates/codecompass-cli",
+    "crates/codecompass-core",
+    "crates/codecompass-state",
+    "crates/codecompass-indexer",
+    "crates/codecompass-query",
+    "crates/codecompass-mcp",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/signalridge/codecompass"
+
+[workspace.dependencies]
+# Shared
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+blake3 = "1.8"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+tantivy = "0.22"
+rusqlite = { version = "0.32", features = ["bundled"] }
+ignore = "0.4"
+tempfile = "3"
+
+# Internal crates
+codecompass-core = { path = "crates/codecompass-core" }
+codecompass-state = { path = "crates/codecompass-state" }
+codecompass-indexer = { path = "crates/codecompass-indexer" }
+codecompass-query = { path = "crates/codecompass-query" }
+codecompass-mcp = { path = "crates/codecompass-mcp" }
