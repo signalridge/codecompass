@@ -1,0 +1,25 @@
+# CodeCompass Default Configuration
+
+[index]
+# Maximum file size to index (bytes)
+max_file_size = 1_048_576  # 1MB
+# Default result limit
+default_limit = 10
+# Languages to enable for symbol extraction
+languages = ["rust", "typescript", "python", "go"]
+
+[storage]
+# Base data directory (~ expands to home)
+data_dir = "~/.codecompass"
+# SQLite busy timeout (ms)
+busy_timeout_ms = 5000
+# SQLite cache size (negative = KB)
+cache_size = -64000  # 64MB
+
+[search]
+# Default ref for search queries
+default_ref = "main"
+
+[logging]
+# Default log level: error, warn, info, debug, trace
+level = "info"

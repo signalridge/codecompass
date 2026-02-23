@@ -1,0 +1,39 @@
+# Rust
+target/
+debug/
+release/
+*.rs.bk
+*.rlib
+*.prof*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.iml
+
+# AI tool configs (local per-developer)
+.claude/
+.codex/
+.serena/
+.specify/
+
+# Linter caches
+.ruff_cache/
+
+# Environment
+.env*
+*.log
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# CodeCompass data (local indices)
+.codecompass/
+
+# Claude local instructions
+CLAUDE.md
