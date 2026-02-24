@@ -1,8 +1,10 @@
 use super::*;
 use codecompass_core::config::Config;
-use codecompass_core::types::Project;
+use codecompass_core::types::{Project, generate_project_id};
 use serde_json::json;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// Default prewarm status for tests (complete).
 fn test_prewarm_status() -> AtomicU8 {
@@ -21,6 +23,98 @@ fn make_request(method: &str, params: serde_json::Value) -> JsonRpcRequest {
         method: method.into(),
         params,
     }
+}
+
+#[derive(Default)]
+struct RecordingNotifier {
+    events: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl RecordingNotifier {
+    fn event_count(&self, kind: &'static str) -> usize {
+        self.events
+            .lock()
+            .expect("recording notifier lock")
+            .iter()
+            .filter(|k| **k == kind)
+            .count()
+    }
+
+    fn has_event(&self, kind: &'static str) -> bool {
+        self.event_count(kind) > 0
+    }
+}
+
+impl ProgressNotifier for RecordingNotifier {
+    fn emit_begin(&self, _token: &str, _title: &str, _message: &str) {
+        self.events
+            .lock()
+            .expect("recording notifier lock")
+            .push("begin");
+    }
+
+    fn emit_progress(&self, _token: &str, _title: &str, _message: &str, _percentage: Option<u32>) {
+        self.events
+            .lock()
+            .expect("recording notifier lock")
+            .push("report");
+    }
+
+    fn emit_end(&self, _token: &str, _title: &str, _message: &str) {
+        self.events
+            .lock()
+            .expect("recording notifier lock")
+            .push("end");
+    }
+}
+
+fn create_rust_workspace(workspace: &Path, file_count: usize) {
+    let src = workspace.join("src");
+    std::fs::create_dir_all(&src).expect("create workspace src");
+    for i in 0..file_count {
+        let file = src.join(format!("mod_{i:03}.rs"));
+        let mut content = String::new();
+        content.push_str("#[allow(dead_code)]\n");
+        content.push_str(&format!("pub fn value_{i}() -> i32 {{\n"));
+        for j in 0..20 {
+            content.push_str(&format!("    let v_{j} = {j};\n"));
+        }
+        content.push_str("    42\n}\n");
+        std::fs::write(&file, content).expect("write rust fixture file");
+    }
+}
+
+fn setup_indexing_runtime(workspace: &Path) -> (Config, rusqlite::Connection, String) {
+    let mut config = Config::default();
+    let data_root = workspace
+        .parent()
+        .expect("workspace has parent")
+        .join("cc-data")
+        .to_string_lossy()
+        .to_string();
+    config.storage.data_dir = data_root;
+
+    let project_id = generate_project_id(&workspace.to_string_lossy());
+    let data_dir = config.project_data_dir(&project_id);
+    std::fs::create_dir_all(&data_dir).expect("create data dir");
+    let db_path = data_dir.join(codecompass_core::constants::STATE_DB_FILE);
+    let conn = codecompass_state::db::open_connection(&db_path).expect("open sqlite");
+    codecompass_state::schema::create_tables(&conn).expect("create tables");
+
+    let now = "2026-02-24T00:00:00Z".to_string();
+    let project = Project {
+        project_id: project_id.clone(),
+        repo_root: workspace.to_string_lossy().to_string(),
+        display_name: Some("indexing-test".to_string()),
+        default_ref: codecompass_core::constants::REF_LIVE.to_string(),
+        vcs_mode: false,
+        schema_version: codecompass_core::constants::SCHEMA_VERSION,
+        parser_version: codecompass_core::constants::PARSER_VERSION,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    codecompass_state::project::create_project(&conn, &project).expect("create project");
+    (config, conn, project_id)
 }
 
 #[test]
@@ -2395,6 +2489,85 @@ fn t124_search_code_ranking_reasons_basic_mode() {
     );
 }
 
+/// T453: basic explainability payload should be smaller than full mode.
+#[test]
+fn t453_ranking_explainability_basic_payload_smaller_than_full() {
+    let tmp = tempfile::tempdir().unwrap();
+    let index_set = build_fixture_index(tmp.path());
+
+    let config = Config::default();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let base_ctx = RequestContext {
+        config: &config,
+        index_set: Some(&index_set),
+        schema_status: SchemaStatus::Compatible,
+        compatibility_reason: None,
+        conn: None,
+        workspace,
+        project_id,
+        prewarm_status: &test_prewarm_status(),
+        server_start: &test_server_start(),
+        notifier: Arc::new(NullProgressNotifier),
+        progress_token: None,
+    };
+
+    let basic_request = make_request(
+        "tools/call",
+        json!({
+            "name": "search_code",
+            "arguments": {
+                "query": "validate",
+                "ranking_explain_level": "basic"
+            }
+        }),
+    );
+    let full_request = make_request(
+        "tools/call",
+        json!({
+            "name": "search_code",
+            "arguments": {
+                "query": "validate",
+                "ranking_explain_level": "full"
+            }
+        }),
+    );
+
+    let basic_response = handle_request_with_ctx(&basic_request, &base_ctx);
+    assert!(
+        basic_response.error.is_none(),
+        "expected basic-mode success"
+    );
+    let full_response = handle_request_with_ctx(&full_request, &base_ctx);
+    assert!(full_response.error.is_none(), "expected full-mode success");
+
+    let basic_payload = extract_payload_from_response(&basic_response);
+    let full_payload = extract_payload_from_response(&full_response);
+    let basic_reasons = basic_payload["metadata"]["ranking_reasons"]
+        .as_array()
+        .expect("basic mode should include ranking_reasons");
+    let full_reasons = full_payload["metadata"]["ranking_reasons"]
+        .as_array()
+        .expect("full mode should include ranking_reasons");
+    assert_eq!(
+        basic_reasons.len(),
+        full_reasons.len(),
+        "result count should be stable across explainability levels"
+    );
+
+    let basic_bytes =
+        serde_json::to_vec(&basic_payload["metadata"]["ranking_reasons"]).expect("serialize");
+    let full_bytes =
+        serde_json::to_vec(&full_payload["metadata"]["ranking_reasons"]).expect("serialize");
+    assert!(
+        basic_bytes.len() < full_bytes.len(),
+        "basic payload should be smaller than full payload (basic={}, full={})",
+        basic_bytes.len(),
+        full_bytes.len()
+    );
+}
+
 /// T125: compact=true keeps identity fields and omits heavy context fields
 #[test]
 fn t125_search_code_compact_context_omits_heavy_fields() {
@@ -3794,5 +3967,369 @@ fn t133_search_code_best_effort_policy_stale_index() {
         meta.get("freshness_status").unwrap().as_str().unwrap(),
         "stale",
         "freshness_status should be 'stale' for best_effort policy with stale index"
+    );
+}
+
+// ------------------------------------------------------------------
+// T219: index_repo emits progress notifications when client supports them
+// ------------------------------------------------------------------
+
+#[test]
+fn t219_index_repo_emits_progress_and_end_notifications() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    create_rust_workspace(&workspace, 140);
+    let (config, conn, project_id) = setup_indexing_runtime(&workspace);
+
+    let notifier_impl = Arc::new(RecordingNotifier::default());
+    let notifier: Arc<dyn ProgressNotifier> = notifier_impl.clone();
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "index_repo",
+            "arguments": {
+                "force": true
+            }
+        }),
+    );
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: None,
+            schema_status: SchemaStatus::NotIndexed,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace: &workspace,
+            project_id: &project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier,
+            progress_token: Some("client-progress-token"),
+        },
+    );
+    assert!(
+        response.error.is_none(),
+        "index_repo should succeed: {:?}",
+        response.error
+    );
+    let payload = extract_payload_from_response(&response);
+    assert!(
+        payload
+            .get("progress_token")
+            .and_then(|v| v.as_str())
+            .is_some_and(|token| token.starts_with("index-job-")),
+        "index_repo should always return server-generated progress_token"
+    );
+
+    for _ in 0..120 {
+        if notifier_impl.has_event("end") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    assert!(
+        notifier_impl.has_event("begin"),
+        "should emit begin progress notification"
+    );
+    assert!(
+        notifier_impl.has_event("end"),
+        "should emit end progress notification"
+    );
+}
+
+// ------------------------------------------------------------------
+// T220: no notifications when client doesn't support them; fallback polling fields available
+// ------------------------------------------------------------------
+
+#[test]
+fn t220_index_repo_without_notifications_uses_index_status_progress_fields() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    create_rust_workspace(&workspace, 160);
+    let (config, conn, project_id) = setup_indexing_runtime(&workspace);
+
+    let notifier_impl = Arc::new(RecordingNotifier::default());
+    let notifier: Arc<dyn ProgressNotifier> = notifier_impl.clone();
+
+    let index_request = make_request(
+        "tools/call",
+        json!({
+            "name": "index_repo",
+            "arguments": {
+                "force": true
+            }
+        }),
+    );
+    let index_response = handle_request_with_ctx(
+        &index_request,
+        &RequestContext {
+            config: &config,
+            index_set: None,
+            schema_status: SchemaStatus::NotIndexed,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace: &workspace,
+            project_id: &project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier,
+            progress_token: None,
+        },
+    );
+    assert!(
+        index_response.error.is_none(),
+        "index_repo should succeed: {:?}",
+        index_response.error
+    );
+    assert_eq!(
+        notifier_impl.event_count("begin")
+            + notifier_impl.event_count("report")
+            + notifier_impl.event_count("end"),
+        0,
+        "no notifications should be emitted when client does not declare progress support"
+    );
+
+    let now = "2026-02-24T00:00:00Z".to_string();
+    let active_job = codecompass_state::jobs::IndexJob {
+        job_id: "job-progress-fields".to_string(),
+        project_id: project_id.clone(),
+        r#ref: codecompass_core::constants::REF_LIVE.to_string(),
+        mode: "incremental".to_string(),
+        head_commit: None,
+        sync_id: None,
+        status: "running".to_string(),
+        changed_files: 0,
+        duration_ms: None,
+        error_message: None,
+        retry_count: 0,
+        progress_token: Some("index-job-job-progress-fields".to_string()),
+        files_scanned: 120,
+        files_indexed: 50,
+        symbols_extracted: 300,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    codecompass_state::jobs::create_job(&conn, &active_job).unwrap();
+
+    let status_request = make_request(
+        "tools/call",
+        json!({
+            "name": "index_status",
+            "arguments": {}
+        }),
+    );
+    let status_response = handle_request_with_ctx(
+        &status_request,
+        &RequestContext {
+            config: &config,
+            index_set: None,
+            schema_status: SchemaStatus::NotIndexed,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace: &workspace,
+            project_id: &project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+    assert!(
+        status_response.error.is_none(),
+        "index_status should succeed"
+    );
+    let payload = extract_payload_from_response(&status_response);
+    let active_job = payload
+        .get("active_job")
+        .and_then(|v| v.as_object())
+        .expect("active_job should be present");
+    assert!(active_job.get("files_scanned").unwrap().is_number());
+    assert!(active_job.get("files_indexed").unwrap().is_number());
+    assert!(active_job.get("symbols_extracted").unwrap().is_number());
+    assert!(
+        active_job
+            .get("estimated_completion_pct")
+            .unwrap()
+            .is_number()
+    );
+}
+
+// ------------------------------------------------------------------
+// T456: restart recovery report + warmset visibility in health_check
+// ------------------------------------------------------------------
+
+#[test]
+fn t456_health_check_surfaces_interrupted_recovery_and_warmset_members() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().join("workspace-a");
+    let workspace_b = tmp.path().join("workspace-b");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(&workspace_b).unwrap();
+
+    let (config, conn, project_id) = setup_indexing_runtime(&workspace);
+    let project_b_id = generate_project_id(&workspace_b.to_string_lossy());
+    let now = "2026-02-24T00:00:00Z".to_string();
+    let project_b = Project {
+        project_id: project_b_id.clone(),
+        repo_root: workspace_b.to_string_lossy().to_string(),
+        display_name: Some("workspace-b".to_string()),
+        default_ref: codecompass_core::constants::REF_LIVE.to_string(),
+        vcs_mode: false,
+        schema_version: codecompass_core::constants::SCHEMA_VERSION,
+        parser_version: codecompass_core::constants::PARSER_VERSION,
+        created_at: now.clone(),
+        updated_at: now.clone(),
+    };
+    codecompass_state::project::create_project(&conn, &project_b).unwrap();
+
+    codecompass_state::workspace::register_workspace(
+        &conn,
+        &workspace.to_string_lossy(),
+        Some(&project_id),
+        false,
+        "2026-02-24T00:00:01Z",
+    )
+    .unwrap();
+    codecompass_state::workspace::register_workspace(
+        &conn,
+        &workspace_b.to_string_lossy(),
+        Some(&project_b_id),
+        true,
+        "2026-02-24T00:00:02Z",
+    )
+    .unwrap();
+
+    let interrupted_job = codecompass_state::jobs::IndexJob {
+        job_id: "job-recovery-1".to_string(),
+        project_id: project_id.clone(),
+        r#ref: codecompass_core::constants::REF_LIVE.to_string(),
+        mode: "incremental".to_string(),
+        head_commit: None,
+        sync_id: None,
+        status: "running".to_string(),
+        changed_files: 0,
+        duration_ms: None,
+        error_message: None,
+        retry_count: 0,
+        progress_token: Some("index-job-job-recovery-1".to_string()),
+        files_scanned: 0,
+        files_indexed: 0,
+        symbols_extracted: 0,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    codecompass_state::jobs::create_job(&conn, &interrupted_job).unwrap();
+    let marked = codecompass_state::jobs::mark_interrupted_jobs(&conn).unwrap();
+    assert_eq!(marked, 1, "should mark running job as interrupted");
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "health_check",
+            "arguments": {}
+        }),
+    );
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: None,
+            schema_status: SchemaStatus::NotIndexed,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace: &workspace,
+            project_id: &project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+    assert!(response.error.is_none(), "health_check should succeed");
+    let payload = extract_payload_from_response(&response);
+
+    let report = payload
+        .get("interrupted_recovery_report")
+        .expect("interrupted recovery report should be present");
+    assert_eq!(report.get("detected"), Some(&json!(true)));
+    assert!(
+        report
+            .get("interrupted_jobs")
+            .and_then(|v| v.as_u64())
+            .is_some_and(|count| count >= 1)
+    );
+
+    let members = payload["workspace_warmset"]["members"]
+        .as_array()
+        .expect("warmset members should be an array");
+    let has_workspace_a = members.iter().any(|m| {
+        m.as_str()
+            .is_some_and(|s| s == workspace.to_string_lossy().as_ref())
+    });
+    let has_workspace_b = members.iter().any(|m| {
+        m.as_str()
+            .is_some_and(|s| s == workspace_b.to_string_lossy().as_ref())
+    });
+    assert!(
+        has_workspace_a || has_workspace_b,
+        "warmset members should include recent registered workspaces"
+    );
+}
+
+// ------------------------------------------------------------------
+// T457: warmset-enabled first-query p95 target
+// ------------------------------------------------------------------
+
+#[test]
+fn t457_first_query_p95_under_400ms() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (index_set, db_path) = build_fixture_index_with_db(tmp.path());
+    let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+    let config = Config::default();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let mut samples = Vec::new();
+    for _ in 0..12 {
+        let request = make_request(
+            "tools/call",
+            json!({
+                "name": "search_code",
+                "arguments": {
+                    "query": "validate_token"
+                }
+            }),
+        );
+        let started = Instant::now();
+        let response = handle_request_with_ctx(
+            &request,
+            &RequestContext {
+                config: &config,
+                index_set: Some(&index_set),
+                schema_status: SchemaStatus::Compatible,
+                compatibility_reason: None,
+                conn: Some(&conn),
+                workspace,
+                project_id,
+                prewarm_status: &test_prewarm_status(),
+                server_start: &test_server_start(),
+                notifier: Arc::new(NullProgressNotifier),
+                progress_token: None,
+            },
+        );
+        assert!(response.error.is_none(), "search_code should succeed");
+        samples.push(started.elapsed());
+    }
+    samples.sort();
+    let p95 = samples[samples.len() * 95 / 100];
+    assert!(
+        p95.as_millis() < 400,
+        "warmset-enabled first-query p95 should be < 400ms, got {}ms",
+        p95.as_millis()
     );
 }

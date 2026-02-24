@@ -18,7 +18,6 @@ use axum::{Json, Router};
 use codecompass_core::config::Config;
 use codecompass_core::constants;
 use codecompass_core::types::{SchemaStatus, WorkspaceConfig, generate_project_id};
-use codecompass_state::tantivy_index::IndexSet;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -187,17 +186,13 @@ fn build_health_response_uncached(state: &HttpState) -> Value {
     let pw_status = state.prewarm_status.load(Ordering::Acquire);
     let pw_label = crate::server::prewarm_status_label(pw_status);
 
-    // Load index and DB for health checks
-    let index_set = IndexSet::open_existing(&state.data_dir).ok();
+    // Load index/runtime compatibility for health checks.
+    let runtime = crate::server::load_index_runtime_public(&state.data_dir);
+    let index_set = runtime.index_set;
+    let schema_status = runtime.schema_status;
     let warmset_capacity = crate::server::warmset_capacity();
     let warmset_members =
         crate::server::collect_warmset_members(conn.as_ref(), &state.workspace, warmset_capacity);
-
-    // Schema status
-    let schema_status = match &index_set {
-        Some(_) => SchemaStatus::Compatible,
-        None => SchemaStatus::NotIndexed,
-    };
 
     let stored_schema_version = conn.as_ref().and_then(|c| {
         codecompass_state::project::get_by_id(c, &state.project_id)
@@ -261,10 +256,8 @@ fn build_health_response_uncached(state: &HttpState) -> Value {
             };
 
             let project_data_dir = state.config.project_data_dir(&p.project_id);
-            let project_schema_status = match IndexSet::open_existing(&project_data_dir) {
-                Ok(_) => SchemaStatus::Compatible,
-                Err(err) => crate::server::classify_index_open_error_public(&err),
-            };
+            let project_runtime = crate::server::load_index_runtime_public(&project_data_dir);
+            let project_schema_status = project_runtime.schema_status;
             let (project_schema_status_str, _project_compat_message) = match project_schema_status {
                 SchemaStatus::Compatible => ("compatible", None),
                 SchemaStatus::NotIndexed => ("not_indexed", None),
@@ -313,11 +306,8 @@ fn build_health_response_uncached(state: &HttpState) -> Value {
                             .map(|j| j.updated_at)
                     });
 
-            let project_status = if !matches!(
-                project_schema_status,
-                SchemaStatus::Compatible | SchemaStatus::NotIndexed
-            ) || (p.project_id == state.project_id
-                && pw_status == crate::server::PREWARM_FAILED)
+            let project_status = if !matches!(project_schema_status, SchemaStatus::Compatible)
+                || (p.project_id == state.project_id && pw_status == crate::server::PREWARM_FAILED)
             {
                 "error"
             } else if p.project_id == state.project_id
@@ -385,10 +375,8 @@ fn build_health_response_uncached(state: &HttpState) -> Value {
     // Overall status — priority: error > warming > indexing > ready (per spec)
     let overall_status = if any_project_error
         || pw_status == crate::server::PREWARM_FAILED
-        || !matches!(
-            schema_status,
-            SchemaStatus::Compatible | SchemaStatus::NotIndexed
-        ) {
+        || !matches!(schema_status, SchemaStatus::Compatible)
+    {
         "error"
     } else if pw_status == crate::server::PREWARM_IN_PROGRESS {
         "warming"
@@ -514,14 +502,10 @@ fn handle_http_request(state: &HttpState, request: &JsonRpcRequest) -> JsonRpcRe
             };
 
             let eff_db_path = eff_data_dir.join(constants::STATE_DB_FILE);
-            let index_set = IndexSet::open_existing(&eff_data_dir).ok();
-            let (schema_status, compatibility_reason) = match &index_set {
-                Some(_) => (SchemaStatus::Compatible, None),
-                None => (
-                    SchemaStatus::NotIndexed,
-                    Some("No index found. Run `codecompass index`.".to_string()),
-                ),
-            };
+            let runtime = crate::server::load_index_runtime_public(&eff_data_dir);
+            let schema_status = runtime.schema_status;
+            let index_set = runtime.index_set;
+            let compatibility_reason = runtime.compatibility_reason.as_deref();
 
             let conn = codecompass_state::db::open_connection(&eff_db_path).ok();
 
@@ -542,7 +526,7 @@ fn handle_http_request(state: &HttpState, request: &JsonRpcRequest) -> JsonRpcRe
                 config: &state.config,
                 index_set: index_set.as_ref(),
                 schema_status,
-                compatibility_reason: compatibility_reason.as_deref(),
+                compatibility_reason,
                 conn: conn.as_ref(),
                 workspace: &eff_workspace,
                 project_id: &eff_project_id,
@@ -563,7 +547,101 @@ fn handle_http_request(state: &HttpState, request: &JsonRpcRequest) -> JsonRpcRe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codecompass_core::types::WorkspaceConfig;
+    use codecompass_core::types::{Project, WorkspaceConfig};
+    use std::time::Duration;
+
+    fn build_fixture_index_at(data_dir: &std::path::Path) {
+        use codecompass_indexer::{
+            import_extract, languages, parser, scanner, snippet_extract, symbol_extract, writer,
+        };
+
+        let fixture_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../testdata/fixtures/rust-sample");
+        assert!(
+            fixture_dir.exists(),
+            "fixture directory missing: {}",
+            fixture_dir.display()
+        );
+        std::fs::create_dir_all(data_dir).unwrap();
+        let index_set = codecompass_state::tantivy_index::IndexSet::open(data_dir).unwrap();
+
+        let db_path = data_dir.join(constants::STATE_DB_FILE);
+        let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+        codecompass_state::schema::create_tables(&conn).unwrap();
+
+        let scanned = scanner::scan_directory(&fixture_dir, 1_048_576);
+        assert!(!scanned.is_empty(), "scanner found no fixture files");
+
+        let repo = "test-repo";
+        let r#ref = "live";
+        let mut pending_imports = Vec::new();
+
+        for file in &scanned {
+            let source = std::fs::read_to_string(&file.path).unwrap();
+            let tree = match parser::parse_file(&source, &file.language) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            let extracted = languages::extract_symbols(&tree, &source, &file.language);
+            let raw_imports = import_extract::extract_imports(
+                &tree,
+                &source,
+                &file.language,
+                &file.relative_path,
+            );
+            let symbols = symbol_extract::build_symbol_records(
+                &extracted,
+                repo,
+                r#ref,
+                &file.relative_path,
+                None,
+            );
+            let snippets = snippet_extract::build_snippet_records(
+                &extracted,
+                repo,
+                r#ref,
+                &file.relative_path,
+                None,
+            );
+            let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+            let filename = file.path.file_name().unwrap().to_string_lossy().to_string();
+            let file_record = codecompass_core::types::FileRecord {
+                repo: repo.to_string(),
+                r#ref: r#ref.to_string(),
+                commit: None,
+                path: file.relative_path.clone(),
+                filename,
+                language: file.language.clone(),
+                content_hash,
+                size_bytes: source.len() as u64,
+                updated_at: "2026-01-01T00:00:00Z".to_string(),
+                content_head: source
+                    .lines()
+                    .take(10)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    .into(),
+            };
+            writer::write_file_records(&index_set, &conn, &symbols, &snippets, &file_record)
+                .unwrap();
+            pending_imports.push((file.relative_path.clone(), raw_imports));
+        }
+
+        for (path, raw_imports) in pending_imports {
+            writer::replace_import_edges_for_file(&conn, repo, r#ref, &path, raw_imports).unwrap();
+        }
+    }
+
+    fn extract_payload(response: &JsonRpcResponse) -> Value {
+        let result = response.result.as_ref().expect("result should be present");
+        let content = result
+            .get("content")
+            .expect("result should contain content")
+            .as_array()
+            .expect("content should be array");
+        let text = content[0]["text"].as_str().expect("tool text payload");
+        serde_json::from_str(text).expect("payload should be valid json")
+    }
 
     #[tokio::test]
     async fn health_endpoint_returns_expected_fields() {
@@ -596,6 +674,11 @@ mod tests {
 
         let health = build_health_response(&state);
         assert!(health.get("status").is_some());
+        assert_eq!(
+            health.get("status").and_then(Value::as_str),
+            Some("error"),
+            "unindexed workspace should surface error status in health"
+        );
         assert!(health.get("version").is_some());
         assert!(health.get("uptime_seconds").is_some());
         assert!(health.get("projects").is_some());
@@ -695,5 +778,288 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let parsed: Value = serde_json::from_slice(&body).unwrap();
         assert!(parsed.get("result").is_some());
+    }
+
+    #[test]
+    fn t230_locate_symbol_http_matches_stdio_shape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let mut config = Config::default();
+        config.storage.data_dir = tmp.path().join("cc-data").to_string_lossy().to_string();
+        let project_id = generate_project_id(&workspace.to_string_lossy());
+        let data_dir = config.project_data_dir(&project_id);
+        let db_path = data_dir.join(constants::STATE_DB_FILE);
+
+        build_fixture_index_at(&data_dir);
+        let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+        let now = "2026-02-24T00:00:00Z".to_string();
+        let project = Project {
+            project_id: project_id.clone(),
+            repo_root: workspace.to_string_lossy().to_string(),
+            display_name: Some("http-locate".to_string()),
+            default_ref: constants::REF_LIVE.to_string(),
+            vcs_mode: false,
+            schema_version: constants::SCHEMA_VERSION,
+            parser_version: constants::PARSER_VERSION,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        codecompass_state::project::create_project(&conn, &project).unwrap();
+
+        let router = WorkspaceRouter::new(
+            WorkspaceConfig::default(),
+            workspace.to_path_buf(),
+            db_path.clone(),
+        )
+        .unwrap();
+        let state = HttpState {
+            config: config.clone(),
+            workspace: workspace.to_path_buf(),
+            project_id: project_id.clone(),
+            data_dir: data_dir.clone(),
+            db_path: db_path.clone(),
+            prewarm_status: Arc::new(AtomicU8::new(crate::server::PREWARM_COMPLETE)),
+            warmset_enabled: true,
+            health_cache: Arc::new(Mutex::new(None)),
+            server_start: Instant::now(),
+            router,
+        };
+
+        let http_request = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(1)),
+            method: "tools/call".into(),
+            params: json!({
+                "name": "locate_symbol",
+                "arguments": { "name": "validate_token" }
+            }),
+        };
+        let http_response = handle_http_request(&state, &http_request);
+        assert!(
+            http_response.error.is_none(),
+            "http locate_symbol should succeed"
+        );
+
+        let runtime = crate::server::load_index_runtime_public(&data_dir);
+        let stdio_response =
+            crate::server::handle_tool_call_public(crate::server::PublicToolCallParams {
+                id: Some(json!(1)),
+                tool_name: "locate_symbol",
+                arguments: &json!({ "name": "validate_token" }),
+                config: &config,
+                index_set: runtime.index_set.as_ref(),
+                schema_status: runtime.schema_status,
+                compatibility_reason: runtime.compatibility_reason.as_deref(),
+                conn: Some(&conn),
+                workspace: &workspace,
+                project_id: &project_id,
+                prewarm_status: &state.prewarm_status,
+                server_start: &state.server_start,
+                notifier: Arc::new(NullProgressNotifier),
+                progress_token: None,
+            });
+        assert!(
+            stdio_response.error.is_none(),
+            "stdio locate_symbol should succeed"
+        );
+
+        let http_payload = extract_payload(&http_response);
+        let stdio_payload = extract_payload(&stdio_response);
+        assert!(http_payload.get("results").is_some());
+        assert!(http_payload.get("metadata").is_some());
+        assert_eq!(
+            http_payload
+                .get("metadata")
+                .and_then(|m| m.get("codecompass_protocol_version")),
+            stdio_payload
+                .get("metadata")
+                .and_then(|m| m.get("codecompass_protocol_version"))
+        );
+        assert!(
+            http_payload["results"].as_array().unwrap().len()
+                == stdio_payload["results"].as_array().unwrap().len(),
+            "HTTP and stdio locate_symbol should produce same result count for same inputs"
+        );
+    }
+
+    #[test]
+    fn t231_health_reports_indexing_when_active_job_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let mut config = Config::default();
+        config.storage.data_dir = tmp.path().join("cc-data").to_string_lossy().to_string();
+        let project_id = generate_project_id(&workspace.to_string_lossy());
+        let data_dir = config.project_data_dir(&project_id);
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let db_path = data_dir.join(constants::STATE_DB_FILE);
+        let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+        codecompass_state::schema::create_tables(&conn).unwrap();
+        let _ = codecompass_state::tantivy_index::IndexSet::open(&data_dir).unwrap();
+
+        let now = "2026-02-24T00:00:00Z".to_string();
+        let project = Project {
+            project_id: project_id.clone(),
+            repo_root: workspace.to_string_lossy().to_string(),
+            display_name: Some("http-indexing".to_string()),
+            default_ref: constants::REF_LIVE.to_string(),
+            vcs_mode: false,
+            schema_version: constants::SCHEMA_VERSION,
+            parser_version: constants::PARSER_VERSION,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+        codecompass_state::project::create_project(&conn, &project).unwrap();
+        let active_job = codecompass_state::jobs::IndexJob {
+            job_id: "job-http-active".to_string(),
+            project_id: project_id.clone(),
+            r#ref: constants::REF_LIVE.to_string(),
+            mode: "incremental".to_string(),
+            head_commit: None,
+            sync_id: None,
+            status: "running".to_string(),
+            changed_files: 0,
+            duration_ms: None,
+            error_message: None,
+            retry_count: 0,
+            progress_token: Some("index-job-job-http-active".to_string()),
+            files_scanned: 50,
+            files_indexed: 20,
+            symbols_extracted: 100,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        codecompass_state::jobs::create_job(&conn, &active_job).unwrap();
+
+        let router = WorkspaceRouter::new(
+            WorkspaceConfig::default(),
+            workspace.to_path_buf(),
+            db_path.clone(),
+        )
+        .unwrap();
+        let state = HttpState {
+            config,
+            workspace: workspace.to_path_buf(),
+            project_id,
+            data_dir,
+            db_path,
+            prewarm_status: Arc::new(AtomicU8::new(crate::server::PREWARM_COMPLETE)),
+            warmset_enabled: true,
+            health_cache: Arc::new(Mutex::new(None)),
+            server_start: Instant::now(),
+            router,
+        };
+
+        let health = build_health_response(&state);
+        assert_eq!(
+            health.get("status").and_then(Value::as_str),
+            Some("indexing"),
+            "health status should surface active indexing jobs"
+        );
+    }
+
+    #[tokio::test]
+    async fn t232_http_server_reports_port_conflict() {
+        use tokio::time::timeout;
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let result = timeout(
+            Duration::from_secs(5),
+            run_http_server(
+                &workspace,
+                None,
+                true,
+                WorkspaceConfig::default(),
+                "127.0.0.1",
+                port,
+            ),
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "run_http_server should fail quickly on bound ports"
+        );
+        let err = result.unwrap().expect_err("expected bind conflict error");
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("address already in use")
+                || msg.contains("addrinuse")
+                || msg.contains("os error"),
+            "error should clearly indicate bind/port conflict, got: {msg}"
+        );
+        drop(listener);
+    }
+
+    #[test]
+    fn t457_health_endpoint_p95_under_50ms() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let mut config = Config::default();
+        config.storage.data_dir = tmp.path().join("cc-data").to_string_lossy().to_string();
+        let project_id = generate_project_id(&workspace.to_string_lossy());
+        let data_dir = config.project_data_dir(&project_id);
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let db_path = data_dir.join(constants::STATE_DB_FILE);
+        let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+        codecompass_state::schema::create_tables(&conn).unwrap();
+        let _ = codecompass_state::tantivy_index::IndexSet::open(&data_dir).unwrap();
+
+        let now = "2026-02-24T00:00:00Z".to_string();
+        let project = Project {
+            project_id: project_id.clone(),
+            repo_root: workspace.to_string_lossy().to_string(),
+            display_name: Some("http-perf".to_string()),
+            default_ref: constants::REF_LIVE.to_string(),
+            vcs_mode: false,
+            schema_version: constants::SCHEMA_VERSION,
+            parser_version: constants::PARSER_VERSION,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        codecompass_state::project::create_project(&conn, &project).unwrap();
+
+        let router = WorkspaceRouter::new(
+            WorkspaceConfig::default(),
+            workspace.to_path_buf(),
+            db_path.clone(),
+        )
+        .unwrap();
+        let state = HttpState {
+            config,
+            workspace: workspace.to_path_buf(),
+            project_id,
+            data_dir,
+            db_path,
+            prewarm_status: Arc::new(AtomicU8::new(crate::server::PREWARM_COMPLETE)),
+            warmset_enabled: true,
+            health_cache: Arc::new(Mutex::new(None)),
+            server_start: Instant::now(),
+            router,
+        };
+
+        let mut samples = Vec::new();
+        for _ in 0..20 {
+            let started = Instant::now();
+            let _ = build_health_response_uncached(&state);
+            samples.push(started.elapsed());
+        }
+        samples.sort();
+        let p95 = samples[18];
+        assert!(
+            p95.as_millis() < 50,
+            "/health p95 should be < 50ms, got {}ms",
+            p95.as_millis()
+        );
     }
 }

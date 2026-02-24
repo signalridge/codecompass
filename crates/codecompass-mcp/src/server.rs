@@ -745,6 +745,13 @@ fn resolve_tool_ref(
 
 // ---- Public API for HTTP transport (T223) ----
 
+/// Public runtime compatibility bundle for HTTP transport request routing.
+pub struct PublicIndexRuntime {
+    pub index_set: Option<IndexSet>,
+    pub schema_status: SchemaStatus,
+    pub compatibility_reason: Option<String>,
+}
+
 /// Public wrapper for `resolve_tool_ref` used by the HTTP transport.
 pub fn resolve_tool_ref_public(
     requested_ref: Option<&str>,
@@ -771,6 +778,16 @@ pub fn tool_text_response_public(id: Option<Value>, payload: Value) -> JsonRpcRe
 /// Public wrapper for index-open error classification used by HTTP transport.
 pub fn classify_index_open_error_public(err: &StateError) -> SchemaStatus {
     classify_index_open_error(err).0
+}
+
+/// Public wrapper for loading index/runtime compatibility used by HTTP transport.
+pub fn load_index_runtime_public(data_dir: &Path) -> PublicIndexRuntime {
+    let runtime = load_index_runtime(data_dir);
+    PublicIndexRuntime {
+        index_set: runtime.index_set,
+        schema_status: runtime.schema_status,
+        compatibility_reason: runtime.compatibility_reason,
+    }
 }
 
 /// Parameters for calling tool dispatch from the HTTP transport.

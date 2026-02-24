@@ -43,6 +43,11 @@ New optional parameters added to the existing `locate_symbol` tool:
 }
 ```
 
+`location` is the minimal shape, but implementations MAY include deterministic
+follow-up handles (for example `result_id`, `result_type`, `symbol_id`,
+`symbol_stable_id`, `score`) so agents can chain calls without requiring
+`signature`/`context`.
+
 #### `detail_level: "signature"` (default, ~100 tokens per result)
 
 ```json
@@ -313,6 +318,9 @@ Return project-level operational status for all registered projects.
       "project_id": "a1b2c3d4e5f6g7h8",
       "repo_root": "/path/to/repo",
       "index_status": "ready",
+      "schema_status": "compatible",
+      "current_schema_version": 1,
+      "required_schema_version": 1,
       "freshness_status": "fresh",
       "last_indexed_at": "2026-02-23T10:30:00Z",
       "ref": "main",
@@ -398,3 +406,5 @@ Compatibility note:
 
 - legacy `debug.ranking_reasons` may still be accepted by pre-migration builds.
 - when both are present, `ranking_explain_level` is authoritative.
+- if only legacy `debug.ranking_reasons=true` is set, it maps to
+  `ranking_explain_level="full"` for backward compatibility.

@@ -554,6 +554,93 @@ mod tests {
         assert_eq!(r1.project_id, r2.project_id);
     }
 
+    // T239: Auto-discover 3 workspaces and verify known_workspaces entries + last_used updates.
+    #[test]
+    fn t239_auto_discover_three_workspaces_updates_known_workspaces() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("data/state.db");
+        setup_db(&db_path);
+
+        let root = dir.path().join("auto-discover");
+        let ws1 = root.join("repo-a");
+        let ws2 = root.join("repo-b");
+        let ws3 = root.join("repo-c");
+        std::fs::create_dir_all(&ws1).unwrap();
+        std::fs::create_dir_all(&ws2).unwrap();
+        std::fs::create_dir_all(&ws3).unwrap();
+
+        let config = WorkspaceConfig {
+            auto_workspace: true,
+            allowed_roots: AllowedRoots::new(vec![std::fs::canonicalize(&root).unwrap()]),
+            max_auto_workspaces: 10,
+        };
+        let router =
+            WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path.clone()).unwrap();
+
+        let ws1s = std::fs::canonicalize(&ws1)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let ws2s = std::fs::canonicalize(&ws2)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let ws3s = std::fs::canonicalize(&ws3)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let _ = router.resolve_workspace(Some(&ws1s)).unwrap();
+        let _ = router.resolve_workspace(Some(&ws2s)).unwrap();
+        let _ = router.resolve_workspace(Some(&ws3s)).unwrap();
+
+        // Querying again should update last_used for the selected workspace.
+        let _ = router.resolve_workspace(Some(&ws2s)).unwrap();
+
+        let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+        let workspaces = codecompass_state::workspace::list_workspaces(&conn).unwrap();
+        assert_eq!(workspaces.len(), 3, "should register 3 known workspaces");
+        let mut paths: Vec<_> = workspaces
+            .iter()
+            .map(|w| w.workspace_path.clone())
+            .collect();
+        paths.sort();
+        assert_eq!(paths, vec![ws1s.clone(), ws2s.clone(), ws3s.clone()]);
+
+        let ws2_entry = workspaces
+            .iter()
+            .find(|w| w.workspace_path == ws2s)
+            .expect("workspace-b should be present");
+        assert!(
+            !ws2_entry.last_used_at.is_empty(),
+            "last_used_at should be populated for re-queried workspace"
+        );
+    }
+
+    // T457: Workspace routing overhead p95 should stay below 5ms.
+    #[test]
+    fn t457_workspace_routing_overhead_p95_under_5ms() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("data/state.db");
+        setup_db(&db_path);
+
+        let config = WorkspaceConfig::default();
+        let router = WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
+        let mut samples = Vec::new();
+        for _ in 0..200 {
+            let started = std::time::Instant::now();
+            let resolved = router.resolve_workspace(None).unwrap();
+            assert_eq!(resolved.workspace_path, dir.path());
+            samples.push(started.elapsed());
+        }
+        samples.sort();
+        let p95 = samples[190];
+        assert!(
+            p95.as_millis() < 5,
+            "workspace routing p95 should be < 5ms, got {}ms",
+            p95.as_millis()
+        );
+    }
+
     // Nonexistent path returns error
     #[test]
     fn resolve_nonexistent_path_returns_error() {

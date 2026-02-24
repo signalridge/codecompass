@@ -24,14 +24,7 @@ pub(super) fn handle_locate_symbol(params: QueryToolParams<'_>) -> JsonRpcRespon
     let detail_level = parse_detail_level(arguments);
     let compact = parse_compact(arguments);
     let effective_ref = resolve_tool_ref(requested_ref, workspace, conn, project_id);
-    let base_metadata = build_metadata(
-        &effective_ref,
-        schema_status,
-        config,
-        conn,
-        workspace,
-        project_id,
-    );
+    let base_metadata = validation_metadata(&effective_ref, schema_status);
 
     if name.trim().is_empty() {
         return tool_error_response(
@@ -184,14 +177,7 @@ pub(super) fn handle_search_code(params: QueryToolParams<'_>) -> JsonRpcResponse
     let detail_level = parse_detail_level(arguments);
     let compact = parse_compact(arguments);
     let effective_ref = resolve_tool_ref(requested_ref, workspace, conn, project_id);
-    let base_metadata = build_metadata(
-        &effective_ref,
-        schema_status,
-        config,
-        conn,
-        workspace,
-        project_id,
-    );
+    let base_metadata = validation_metadata(&effective_ref, schema_status);
 
     if query.trim().is_empty() {
         return tool_error_response(

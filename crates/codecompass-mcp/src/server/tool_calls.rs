@@ -56,7 +56,6 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
     } = params;
 
     match tool_name {
-
         "locate_symbol" => query_tools::handle_locate_symbol(QueryToolParams {
             id,
             arguments,
@@ -96,14 +95,7 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
                 _ => {
                     let effective_ref =
                         resolve_tool_ref(requested_ref, workspace, conn, project_id);
-                    let metadata = build_metadata(
-                        &effective_ref,
-                        schema_status,
-                        config,
-                        conn,
-                        workspace,
-                        project_id,
-                    );
+                    let metadata = validation_metadata(&effective_ref, schema_status);
                     return tool_error_response(
                         id,
                         "invalid_input",
@@ -216,14 +208,7 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
                 _ => {
                     let effective_ref =
                         resolve_tool_ref(requested_ref, workspace, conn, project_id);
-                    let metadata = build_metadata(
-                        &effective_ref,
-                        schema_status,
-                        config,
-                        conn,
-                        workspace,
-                        project_id,
-                    );
+                    let metadata = validation_metadata(&effective_ref, schema_status);
                     return tool_error_response(
                         id,
                         "invalid_input",
@@ -332,14 +317,7 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
             let requested_ref = arguments.get("ref").and_then(|v| v.as_str());
             let language = arguments.get("language").and_then(|v| v.as_str());
             let effective_ref = resolve_tool_ref(requested_ref, workspace, conn, project_id);
-            let mut metadata = build_metadata(
-                &effective_ref,
-                schema_status,
-                config,
-                conn,
-                workspace,
-                project_id,
-            );
+            let mut metadata = validation_metadata(&effective_ref, schema_status);
 
             if query.trim().is_empty() {
                 return tool_error_response(
@@ -818,8 +796,13 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
                 );
             }
 
-            // Use current_exe() to find the binary reliably (works in MCP agent setups)
-            let exe = std::env::current_exe().unwrap_or_else(|_| "codecompass".into());
+            // Resolve the CLI binary used to run indexing subprocesses.
+            // Priority:
+            // 1) explicit override via CODECOMPASS_INDEX_BIN (tests/tooling)
+            // 2) sibling `codecompass` binary next to current executable
+            // 3) current executable path
+            // 4) PATH lookup fallback (`codecompass`)
+            let exe = resolve_index_binary();
             let workspace_str = workspace.to_string_lossy();
             let job_id = format!("{:016x}", rand_u64());
             // HIGH-2: Server-generated progress_token per spec T216
@@ -836,6 +819,8 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
                 .arg("--path")
                 .arg(workspace_str.as_ref())
                 .env("CODECOMPASS_JOB_ID", &job_id)
+                .env("CODECOMPASS_PROJECT_ID", project_id)
+                .env("CODECOMPASS_STORAGE_DATA_DIR", &config.storage.data_dir)
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
             if force {
@@ -1033,6 +1018,36 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
     }
 }
 
+fn resolve_index_binary() -> std::path::PathBuf {
+    if let Some(path) = std::env::var_os("CODECOMPASS_INDEX_BIN") {
+        return std::path::PathBuf::from(path);
+    }
+
+    if let Ok(current) = std::env::current_exe() {
+        if let Some(parent) = current.parent() {
+            let mut base = parent.to_path_buf();
+            if base
+                .file_name()
+                .is_some_and(|name| name == std::ffi::OsStr::new("deps"))
+            {
+                let _ = base.pop();
+            }
+            let candidate_name = if cfg!(windows) {
+                "codecompass.exe"
+            } else {
+                "codecompass"
+            };
+            let candidate = base.join(candidate_name);
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+        return current;
+    }
+
+    std::path::PathBuf::from("codecompass")
+}
+
 fn handle_health_check(params: &ToolCallParams<'_>) -> JsonRpcResponse {
     let ToolCallParams {
         id,
@@ -1048,7 +1063,10 @@ fn handle_health_check(params: &ToolCallParams<'_>) -> JsonRpcResponse {
         ..
     } = params;
 
-    let requested_workspace = arguments.get("workspace").and_then(|v| v.as_str());
+    let workspace_scoped = arguments
+        .get("workspace")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.trim().is_empty());
     let effective_ref = resolve_tool_ref(None, workspace, *conn, project_id);
     let metadata = build_metadata(
         &effective_ref,
@@ -1061,24 +1079,12 @@ fn handle_health_check(params: &ToolCallParams<'_>) -> JsonRpcResponse {
 
     // Resolve target projects.
     let projects = if let Some(c) = conn {
-        if let Some(rw) = requested_workspace {
-            match codecompass_state::project::get_by_root(c, rw)
+        if workspace_scoped {
+            codecompass_state::project::get_by_id(c, project_id)
                 .ok()
                 .flatten()
-            {
-                Some(p) => vec![p],
-                None => {
-                    return tool_error_response(
-                        id.clone(),
-                        "workspace_not_registered",
-                        format!("The specified workspace '{}' is not registered.", rw),
-                        Some(json!({
-                            "requested_workspace": rw,
-                        })),
-                        metadata,
-                    );
-                }
-            }
+                .into_iter()
+                .collect()
         } else {
             codecompass_state::project::list_projects(c).unwrap_or_default()
         }
@@ -1513,6 +1519,18 @@ pub(crate) fn tool_text_response(id: Option<Value>, payload: Value) -> JsonRpcRe
     )
 }
 
+/// Build metadata for request validation errors without triggering filesystem
+/// freshness scans. Query handlers call `check_and_enforce_freshness` once
+/// after argument validation and before execution.
+fn validation_metadata(ref_name: &str, schema_status: SchemaStatus) -> ProtocolMetadata {
+    match schema_status {
+        SchemaStatus::Compatible => ProtocolMetadata::new(ref_name),
+        SchemaStatus::NotIndexed => ProtocolMetadata::not_indexed(ref_name),
+        SchemaStatus::ReindexRequired => ProtocolMetadata::reindex_required(ref_name),
+        SchemaStatus::CorruptManifest => ProtocolMetadata::corrupt_manifest(ref_name),
+    }
+}
+
 /// Result of freshness check + policy enforcement for query tools.
 struct FreshnessEnforced {
     metadata: ProtocolMetadata,
@@ -1641,13 +1659,16 @@ fn ranking_reasons_payload(
     }
 }
 
-fn dedup_search_results(results: Vec<search::SearchResult>) -> (Vec<search::SearchResult>, usize) {
+fn dedup_search_results(
+    results: Vec<search::SearchResult>,
+) -> (Vec<search::SearchResult>, Vec<usize>, usize) {
     use std::collections::HashSet;
 
     let mut seen = HashSet::new();
     let mut deduped = Vec::with_capacity(results.len());
+    let mut kept_indices = Vec::with_capacity(results.len());
     let mut suppressed = 0usize;
-    for result in results {
+    for (index, result) in results.into_iter().enumerate() {
         let key =
             if let Some(stable_id) = result.symbol_stable_id.as_ref().filter(|s| !s.is_empty()) {
                 format!("stable:{}", stable_id)
@@ -1663,11 +1684,12 @@ fn dedup_search_results(results: Vec<search::SearchResult>) -> (Vec<search::Sear
             };
         if seen.insert(key) {
             deduped.push(result);
+            kept_indices.push(index);
         } else {
             suppressed += 1;
         }
     }
-    (deduped, suppressed)
+    (deduped, kept_indices, suppressed)
 }
 
 fn dedup_locate_results(results: Vec<locate::LocateResult>) -> (Vec<locate::LocateResult>, usize) {
@@ -1692,6 +1714,22 @@ fn dedup_locate_results(results: Vec<locate::LocateResult>) -> (Vec<locate::Loca
         }
     }
     (deduped, suppressed)
+}
+
+fn align_ranking_reasons_to_dedup(
+    reasons: &[codecompass_core::types::RankingReasons],
+    kept_indices: &[usize],
+) -> Vec<codecompass_core::types::RankingReasons> {
+    let mut aligned = Vec::with_capacity(kept_indices.len());
+    for (new_index, old_index) in kept_indices.iter().copied().enumerate() {
+        let Some(reason) = reasons.get(old_index) else {
+            continue;
+        };
+        let mut updated = reason.clone();
+        updated.result_index = new_index;
+        aligned.push(updated);
+    }
+    aligned
 }
 
 fn enforce_payload_safety_limit(results: Vec<Value>, max_bytes: usize) -> (Vec<Value>, bool) {
@@ -1848,9 +1886,10 @@ mod tests {
             snippet: None,
         };
 
-        let (deduped, suppressed) = dedup_search_results(vec![base, second, third]);
+        let (deduped, kept_indices, suppressed) = dedup_search_results(vec![base, second, third]);
         assert_eq!(suppressed, 1);
         assert_eq!(deduped.len(), 2);
+        assert_eq!(kept_indices, vec![0, 2]);
     }
 
     #[test]
