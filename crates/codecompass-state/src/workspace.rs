@@ -13,10 +13,13 @@ pub struct KnownWorkspace {
 }
 
 /// Register a new workspace or update an existing one.
+///
+/// `project_id` can be `None` for auto-discovered workspaces where the project
+/// entry hasn't been created yet (FK to `projects` allows NULL).
 pub fn register_workspace(
     conn: &Connection,
     workspace_path: &str,
-    project_id: &str,
+    project_id: Option<&str>,
     auto_discovered: bool,
     now: &str,
 ) -> Result<(), StateError> {
@@ -24,9 +27,23 @@ pub fn register_workspace(
         "INSERT INTO known_workspaces (workspace_path, project_id, auto_discovered, last_used_at, index_status)
          VALUES (?1, ?2, ?3, ?4, 'not_indexed')
          ON CONFLICT(workspace_path) DO UPDATE SET
-           project_id = excluded.project_id,
+           project_id = COALESCE(excluded.project_id, known_workspaces.project_id),
            last_used_at = excluded.last_used_at",
         params![workspace_path, project_id, auto_discovered as i32, now],
+    )
+    .map_err(StateError::sqlite)?;
+    Ok(())
+}
+
+/// Update the project_id for a known workspace (used after project creation).
+pub fn update_workspace_project_id(
+    conn: &Connection,
+    workspace_path: &str,
+    project_id: &str,
+) -> Result<(), StateError> {
+    conn.execute(
+        "UPDATE known_workspaces SET project_id = ?1 WHERE workspace_path = ?2",
+        params![project_id, workspace_path],
     )
     .map_err(StateError::sqlite)?;
     Ok(())
@@ -240,7 +257,7 @@ mod tests {
         register_workspace(
             &conn,
             "/home/user/project-a",
-            "proj_1",
+            Some("proj_1"),
             false,
             "2026-01-01T00:00:00Z",
         )
@@ -269,7 +286,7 @@ mod tests {
         register_workspace(
             &conn,
             "/home/user/project-a",
-            "proj_1",
+            Some("proj_1"),
             false,
             "2026-01-01T00:00:00Z",
         )
@@ -290,7 +307,7 @@ mod tests {
         register_workspace(
             &conn,
             "/home/user/project-a",
-            "proj_1",
+            Some("proj_1"),
             false,
             "2026-01-01T00:00:00Z",
         )
@@ -313,7 +330,7 @@ mod tests {
         register_workspace(
             &conn,
             "/home/user/project-a",
-            "proj_1",
+            Some("proj_1"),
             false,
             "2026-01-01T00:00:00Z",
         )
@@ -321,7 +338,7 @@ mod tests {
         register_workspace(
             &conn,
             "/home/user/project-b",
-            "proj_2",
+            Some("proj_2"),
             true,
             "2026-01-02T00:00:00Z",
         )
@@ -345,7 +362,7 @@ mod tests {
             register_workspace(
                 &conn,
                 &path,
-                &pid,
+                Some(&pid),
                 true,
                 &format!("2026-01-0{}T00:00:00Z", i + 1),
             )
@@ -371,7 +388,7 @@ mod tests {
         register_workspace(
             &conn,
             "/home/user/project-a",
-            "proj_1",
+            Some("proj_1"),
             true,
             "2026-01-01T00:00:00Z",
         )
@@ -392,7 +409,7 @@ mod tests {
             register_workspace(
                 &conn,
                 &path,
-                &pid,
+                Some(&pid),
                 i >= 2,
                 &format!("2026-01-0{}T00:00:00Z", i + 1),
             )
@@ -422,7 +439,7 @@ mod tests {
         register_workspace(
             &conn,
             "/home/user/project-a",
-            "proj_1",
+            Some("proj_1"),
             false,
             "2026-01-01T00:00:00Z",
         )
@@ -442,7 +459,7 @@ mod tests {
         register_workspace(
             &conn,
             "/home/user/project-a",
-            "proj_1",
+            Some("proj_1"),
             false,
             "2026-01-01T00:00:00Z",
         )
@@ -452,7 +469,7 @@ mod tests {
         register_workspace(
             &conn,
             "/home/user/project-a",
-            "proj_1",
+            Some("proj_1"),
             false,
             "2026-02-01T00:00:00Z",
         )
@@ -473,7 +490,7 @@ mod tests {
             register_workspace(
                 &conn,
                 &path,
-                &pid,
+                Some(&pid),
                 false,
                 &format!("2026-01-0{}T00:00:00Z", i + 1),
             )

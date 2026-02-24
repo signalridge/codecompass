@@ -1511,7 +1511,7 @@ fn tool_error_response(
 }
 
 /// Helper: wrap a JSON value as MCP tool text content response.
-fn tool_text_response(id: Option<Value>, payload: Value) -> JsonRpcResponse {
+pub(super) fn tool_text_response(id: Option<Value>, payload: Value) -> JsonRpcResponse {
     JsonRpcResponse::success(
         id,
         json!({

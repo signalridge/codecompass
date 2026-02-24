@@ -1,9 +1,10 @@
 use crate::protocol::{JsonRpcRequest, JsonRpcResponse, ProtocolMetadata};
 use crate::tools;
+use crate::workspace_router::WorkspaceRouter;
 use codecompass_core::config::Config;
 use codecompass_core::constants;
-use codecompass_core::error::StateError;
-use codecompass_core::types::{DetailLevel, SchemaStatus, generate_project_id};
+use codecompass_core::error::{StateError, WorkspaceError};
+use codecompass_core::types::{DetailLevel, SchemaStatus, WorkspaceConfig, generate_project_id};
 use codecompass_query::context;
 use codecompass_query::detail;
 use codecompass_query::freshness::{
@@ -51,12 +52,17 @@ pub fn run_server(
     workspace: &Path,
     config_file: Option<&Path>,
     no_prewarm: bool,
+    workspace_config: WorkspaceConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::load_with_file(Some(workspace), config_file)?;
     let project_id = generate_project_id(&workspace.to_string_lossy());
     let data_dir = config.project_data_dir(&project_id);
     let db_path = data_dir.join(constants::STATE_DB_FILE);
     let server_start = Instant::now();
+
+    // Create workspace router (validates config at startup — T206/T208)
+    let router = WorkspaceRouter::new(workspace_config, workspace.to_path_buf(), db_path.clone())
+        .map_err(|e| format!("workspace config error: {}", e))?;
 
     // Shared prewarm status
     let prewarm_status = Arc::new(AtomicU8::new(PREWARM_PENDING));
@@ -119,22 +125,198 @@ pub fn run_server(
             }
         };
 
-        let index_runtime = load_index_runtime(&data_dir);
-        let conn = codecompass_state::db::open_connection(&db_path).ok();
+        // Resolve workspace for tools/call requests
+        let (eff_workspace, eff_project_id, eff_data_dir) = if request.method == "tools/call" {
+            let ws_param = request
+                .params
+                .get("arguments")
+                .and_then(|a| a.get("workspace"))
+                .and_then(|v| v.as_str());
+            match router.resolve_workspace(ws_param) {
+                Ok(resolved) => {
+                    let eff_data_dir = config.project_data_dir(&resolved.project_id);
+
+                    // T205: On-demand indexing for auto-discovered workspaces
+                    if resolved.on_demand_indexing
+                        && let Err(e) = bootstrap_and_index(
+                            &resolved.workspace_path,
+                            &resolved.project_id,
+                            &eff_data_dir,
+                        )
+                    {
+                        error!(
+                            workspace = %resolved.workspace_path.display(),
+                            "on-demand bootstrap failed: {}", e
+                        );
+                    }
+
+                    (
+                        resolved.workspace_path,
+                        resolved.project_id,
+                        eff_data_dir,
+                    )
+                }
+                Err(e) => {
+                    let resp = workspace_error_to_response(request.id.clone(), &e);
+                    writeln!(stdout, "{}", serde_json::to_string(&resp)?)?;
+                    stdout.flush()?;
+                    continue;
+                }
+            }
+        } else {
+            (workspace.to_path_buf(), project_id.clone(), data_dir.clone())
+        };
+
+        let eff_db_path = eff_data_dir.join(constants::STATE_DB_FILE);
+        let index_runtime = load_index_runtime(&eff_data_dir);
+        let conn = codecompass_state::db::open_connection(&eff_db_path).ok();
         let request_ctx = RequestContext {
             config: &config,
             index_set: index_runtime.index_set.as_ref(),
             schema_status: index_runtime.schema_status,
             compatibility_reason: index_runtime.compatibility_reason.as_deref(),
             conn: conn.as_ref(),
-            workspace,
-            project_id: &project_id,
+            workspace: &eff_workspace,
+            project_id: &eff_project_id,
             prewarm_status: &prewarm_status,
             server_start: &server_start,
         };
         let response = handle_request_with_ctx(&request, &request_ctx);
         writeln!(stdout, "{}", serde_json::to_string(&response)?)?;
         stdout.flush()?;
+    }
+
+    Ok(())
+}
+
+/// Convert a workspace resolution error into an MCP tool-level error response.
+fn workspace_error_to_response(
+    id: Option<Value>,
+    err: &WorkspaceError,
+) -> JsonRpcResponse {
+    let (code, message) = match err {
+        WorkspaceError::NotRegistered { path } => (
+            "workspace_not_registered",
+            format!(
+                "Workspace not registered: {}. Pass a known workspace or enable --auto-workspace.",
+                path
+            ),
+        ),
+        WorkspaceError::NotAllowed { path, reason } => (
+            "workspace_not_allowed",
+            format!("Workspace not allowed: {} ({})", path, reason),
+        ),
+        WorkspaceError::AutoDiscoveryDisabled => (
+            "workspace_not_registered",
+            "Auto-workspace is disabled. Enable with --auto-workspace.".to_string(),
+        ),
+        WorkspaceError::LimitExceeded { max } => (
+            "workspace_limit_exceeded",
+            format!("Maximum auto-discovered workspaces ({}) exceeded.", max),
+        ),
+        WorkspaceError::AllowedRootRequired => (
+            "invalid_input",
+            "--allowed-root is required when --auto-workspace is enabled.".to_string(),
+        ),
+    };
+
+    let error_payload = json!({
+        "error": {
+            "code": code,
+            "message": message,
+        }
+    });
+
+    tool_calls::tool_text_response(id, error_payload)
+}
+
+/// Bootstrap a newly auto-discovered workspace: create project entry, DB, indices,
+/// and spawn the indexer subprocess. (T205)
+fn bootstrap_and_index(
+    workspace: &Path,
+    project_id: &str,
+    data_dir: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Create data directory
+    std::fs::create_dir_all(data_dir)?;
+
+    // Open SQLite and create schema
+    let db_path = data_dir.join(constants::STATE_DB_FILE);
+    let conn = codecompass_state::db::open_connection(&db_path)?;
+    codecompass_state::schema::create_tables(&conn)?;
+
+    // Register project if not already present
+    let repo_root_str = workspace.to_string_lossy().to_string();
+    if codecompass_state::project::get_by_root(&conn, &repo_root_str)?.is_none() {
+        let vcs_mode = workspace.join(".git").exists();
+        let default_ref = if vcs_mode {
+            codecompass_core::vcs::detect_head_branch(workspace)
+                .unwrap_or_else(|_| "main".to_string())
+        } else {
+            constants::REF_LIVE.to_string()
+        };
+
+        let now = codecompass_core::time::now_iso8601();
+        let project = codecompass_core::types::Project {
+            project_id: project_id.to_string(),
+            repo_root: repo_root_str.clone(),
+            display_name: workspace
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string()),
+            default_ref,
+            vcs_mode,
+            schema_version: constants::SCHEMA_VERSION,
+            parser_version: constants::PARSER_VERSION,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        codecompass_state::project::create_project(&conn, &project)?;
+
+        // Update the workspace entry (registered with NULL project_id) with the real project_id
+        let _ = codecompass_state::workspace::update_workspace_project_id(
+            &conn,
+            &repo_root_str,
+            project_id,
+        );
+    }
+
+    // Create Tantivy index directories
+    let _ = codecompass_state::tantivy_index::IndexSet::open(data_dir)?;
+
+    // Spawn indexer subprocess
+    let exe = std::env::current_exe().unwrap_or_else(|_| "codecompass".into());
+    let workspace_str = workspace.to_string_lossy();
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("index")
+        .arg("--path")
+        .arg(workspace_str.as_ref())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    // Pass config file path if available in config's data dir
+    let config_path = workspace.join(constants::PROJECT_CONFIG_FILE);
+    if config_path.exists() {
+        cmd.arg("--config").arg(&config_path);
+    }
+
+    match cmd.spawn() {
+        Ok(child) => {
+            std::thread::spawn(move || {
+                let mut child = child;
+                let _ = child.wait();
+            });
+            info!(
+                project_id,
+                workspace = %workspace.display(),
+                "On-demand indexing started for auto-discovered workspace"
+            );
+        }
+        Err(e) => {
+            error!(
+                project_id,
+                "Failed to spawn on-demand indexer: {}", e
+            );
+        }
     }
 
     Ok(())

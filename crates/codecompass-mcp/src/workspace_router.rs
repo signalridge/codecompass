@@ -1,0 +1,502 @@
+use codecompass_core::error::WorkspaceError;
+use codecompass_core::types::{WorkspaceConfig, generate_project_id};
+use std::path::{Path, PathBuf};
+
+/// Workspace resolution result containing the resolved project context.
+#[derive(Debug, Clone)]
+pub struct ResolvedWorkspace {
+    pub workspace_path: PathBuf,
+    pub project_id: String,
+    pub on_demand_indexing: bool,
+}
+
+/// Router that resolves workspace parameters to project contexts.
+#[derive(Debug)]
+pub struct WorkspaceRouter {
+    config: WorkspaceConfig,
+    default_workspace: PathBuf,
+    default_project_id: String,
+    db_path: PathBuf,
+}
+
+impl WorkspaceRouter {
+    /// Create a new workspace router.
+    ///
+    /// # Errors
+    /// Returns `AllowedRootRequired` if auto_workspace is enabled without allowed roots.
+    pub fn new(
+        config: WorkspaceConfig,
+        default_workspace: PathBuf,
+        db_path: PathBuf,
+    ) -> Result<Self, WorkspaceError> {
+        // T206: startup validation
+        if config.auto_workspace && config.allowed_roots.is_empty() {
+            return Err(WorkspaceError::AllowedRootRequired);
+        }
+
+        let default_project_id =
+            generate_project_id(&default_workspace.to_string_lossy());
+
+        Ok(Self {
+            config,
+            default_workspace,
+            default_project_id,
+            db_path,
+        })
+    }
+
+    /// Resolve a workspace parameter to a project context.
+    ///
+    /// Logic:
+    /// 1. None → use default workspace
+    /// 2. Known workspace → load project
+    /// 3. Unknown + auto-workspace enabled → validate, register, trigger on-demand index
+    /// 4. Unknown + auto-workspace disabled → error
+    pub fn resolve_workspace(
+        &self,
+        workspace_param: Option<&str>,
+    ) -> Result<ResolvedWorkspace, WorkspaceError> {
+        let workspace_param = match workspace_param {
+            Some(p) if !p.trim().is_empty() => p.trim(),
+            _ => {
+                // Case 1: Use default workspace
+                return Ok(ResolvedWorkspace {
+                    workspace_path: self.default_workspace.clone(),
+                    project_id: self.default_project_id.clone(),
+                    on_demand_indexing: false,
+                });
+            }
+        };
+
+        let path = Path::new(workspace_param);
+
+        // Canonicalize the path
+        let canonical = std::fs::canonicalize(path).map_err(|e| {
+            WorkspaceError::NotAllowed {
+                path: workspace_param.to_string(),
+                reason: format!("path resolution failed: {e}"),
+            }
+        })?;
+
+        // If this is the default workspace (after canonicalization), return it directly
+        if canonical == self.default_workspace {
+            return Ok(ResolvedWorkspace {
+                workspace_path: self.default_workspace.clone(),
+                project_id: self.default_project_id.clone(),
+                on_demand_indexing: false,
+            });
+        }
+
+        // Check if workspace is known in DB
+        let conn = codecompass_state::db::open_connection(&self.db_path)
+            .map_err(|e| WorkspaceError::NotAllowed {
+                path: canonical.display().to_string(),
+                reason: format!("database error: {e}"),
+            })?;
+
+        let canonical_str = canonical.to_string_lossy().to_string();
+
+        if let Some(ws) =
+            codecompass_state::workspace::get_workspace(&conn, &canonical_str)
+                .map_err(|e| WorkspaceError::NotAllowed {
+                    path: canonical_str.clone(),
+                    reason: format!("database error: {e}"),
+                })?
+        {
+            // Case 2: Known workspace
+            let project_id = ws
+                .project_id
+                .unwrap_or_else(|| generate_project_id(&canonical_str));
+
+            // Update last_used_at
+            let now = codecompass_core::time::now_iso8601();
+            let _ = codecompass_state::workspace::update_last_used(&conn, &canonical_str, &now);
+
+            return Ok(ResolvedWorkspace {
+                workspace_path: canonical,
+                project_id,
+                on_demand_indexing: false,
+            });
+        }
+
+        // Case 3/4: Unknown workspace
+        if !self.config.auto_workspace {
+            return Err(WorkspaceError::NotRegistered {
+                path: canonical_str,
+            });
+        }
+
+        // Validate against allowed roots
+        if !self.config.allowed_roots.contains(&canonical) {
+            return Err(WorkspaceError::NotAllowed {
+                path: canonical_str,
+                reason: "path is outside all --allowed-root prefixes".to_string(),
+            });
+        }
+
+        // Evict LRU if needed
+        let _ = codecompass_state::workspace::evict_lru_auto_discovered(
+            &conn,
+            self.config.max_auto_workspaces,
+        );
+
+        // Register new workspace
+        let project_id = generate_project_id(&canonical_str);
+        let now = codecompass_core::time::now_iso8601();
+
+        codecompass_state::workspace::register_workspace(
+            &conn,
+            &canonical_str,
+            None, // project_id is NULL until bootstrap_and_index creates the project
+            true,
+            &now,
+        )
+        .map_err(|e| WorkspaceError::NotAllowed {
+            path: canonical_str,
+            reason: format!("failed to register workspace: {e}"),
+        })?;
+
+        // Case 3: Auto-discovered — signal that on-demand indexing should start
+        Ok(ResolvedWorkspace {
+            workspace_path: canonical,
+            project_id,
+            on_demand_indexing: true,
+        })
+    }
+
+    pub fn default_workspace(&self) -> &Path {
+        &self.default_workspace
+    }
+
+    pub fn default_project_id(&self) -> &str {
+        &self.default_project_id
+    }
+
+    pub fn config(&self) -> &WorkspaceConfig {
+        &self.config
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codecompass_core::types::AllowedRoots;
+    use tempfile::tempdir;
+
+    /// Helper: set up a DB with schema at the given path.
+    fn setup_db(db_path: &Path) {
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let conn = codecompass_state::db::open_connection(db_path).unwrap();
+        codecompass_state::schema::create_tables(&conn).unwrap();
+    }
+
+    /// Helper: create a project entry in the DB (satisfies FK constraints).
+    fn create_project_in_db(db_path: &Path, project_id: &str, repo_root: &str) {
+        let conn = codecompass_state::db::open_connection(db_path).unwrap();
+        let now = codecompass_core::time::now_iso8601();
+        let project = codecompass_core::types::Project {
+            project_id: project_id.to_string(),
+            repo_root: repo_root.to_string(),
+            display_name: Some("test".to_string()),
+            default_ref: "main".to_string(),
+            vcs_mode: false,
+            schema_version: 1,
+            parser_version: 1,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        codecompass_state::project::create_project(&conn, &project).unwrap();
+    }
+
+    /// Helper: register a workspace in the DB (project entry must exist first).
+    fn register_workspace_in_db(db_path: &Path, workspace_path: &str, project_id: &str) {
+        let conn = codecompass_state::db::open_connection(db_path).unwrap();
+        let now = codecompass_core::time::now_iso8601();
+        codecompass_state::workspace::register_workspace(
+            &conn,
+            workspace_path,
+            Some(project_id),
+            false,
+            &now,
+        )
+        .unwrap();
+    }
+
+    // T206: startup validation — auto_workspace without allowed_roots fails
+    #[test]
+    fn startup_rejects_auto_workspace_without_allowed_roots() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("data/state.db");
+        setup_db(&db_path);
+
+        let config = WorkspaceConfig {
+            auto_workspace: true,
+            allowed_roots: AllowedRoots::default(),
+            max_auto_workspaces: 10,
+        };
+        let result = WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            WorkspaceError::AllowedRootRequired
+        ));
+    }
+
+    // T206: auto_workspace=false without allowed_roots is fine
+    #[test]
+    fn startup_allows_disabled_auto_workspace_without_roots() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("data/state.db");
+        setup_db(&db_path);
+
+        let config = WorkspaceConfig::default();
+        let result = WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path);
+        assert!(result.is_ok());
+    }
+
+    // T209 (simplified): None workspace resolves to default
+    #[test]
+    fn resolve_none_returns_default_workspace() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("data/state.db");
+        setup_db(&db_path);
+
+        let config = WorkspaceConfig::default();
+        let router =
+            WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
+
+        let resolved = router.resolve_workspace(None).unwrap();
+        assert_eq!(resolved.workspace_path, dir.path());
+        assert!(!resolved.on_demand_indexing);
+    }
+
+    // T209: empty string workspace resolves to default
+    #[test]
+    fn resolve_empty_string_returns_default_workspace() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("data/state.db");
+        setup_db(&db_path);
+
+        let config = WorkspaceConfig::default();
+        let router =
+            WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
+
+        let resolved = router.resolve_workspace(Some("  ")).unwrap();
+        assert_eq!(resolved.workspace_path, dir.path());
+    }
+
+    // T209: known workspace resolves to correct project_id
+    #[test]
+    fn resolve_known_workspace_returns_registered_project() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("data/state.db");
+        setup_db(&db_path);
+
+        // Create a second workspace directory
+        let ws2 = dir.path().join("project_b");
+        std::fs::create_dir_all(&ws2).unwrap();
+        let ws2_canonical = std::fs::canonicalize(&ws2).unwrap();
+        let ws2_str = ws2_canonical.to_string_lossy().to_string();
+
+        // Register project + workspace in the DB
+        create_project_in_db(&db_path, "proj-b", &ws2_str);
+        register_workspace_in_db(&db_path, &ws2_str, "proj-b");
+
+        let config = WorkspaceConfig::default();
+        let router =
+            WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
+
+        let resolved = router
+            .resolve_workspace(Some(&ws2_str))
+            .unwrap();
+        assert_eq!(resolved.workspace_path, ws2_canonical);
+        assert_eq!(resolved.project_id, "proj-b");
+        assert!(!resolved.on_demand_indexing);
+    }
+
+    // T210: auto-workspace discovers unknown workspace under allowed root
+    #[test]
+    fn resolve_auto_discovers_workspace_under_allowed_root() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("data/state.db");
+        setup_db(&db_path);
+
+        // Create workspace under allowed root
+        let ws = dir.path().join("allowed/repo_x");
+        std::fs::create_dir_all(&ws).unwrap();
+        let ws_canonical = std::fs::canonicalize(&ws).unwrap();
+        let ws_str = ws_canonical.to_string_lossy().to_string();
+
+        let allowed_root = std::fs::canonicalize(dir.path().join("allowed")).unwrap();
+        let config = WorkspaceConfig {
+            auto_workspace: true,
+            allowed_roots: AllowedRoots::new(vec![allowed_root]),
+            max_auto_workspaces: 10,
+        };
+        let router =
+            WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path.clone()).unwrap();
+
+        let resolved = router.resolve_workspace(Some(&ws_str)).unwrap();
+        assert_eq!(resolved.workspace_path, ws_canonical);
+        assert!(resolved.on_demand_indexing);
+
+        // Verify workspace was registered in DB
+        let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+        let ws_record =
+            codecompass_state::workspace::get_workspace(&conn, &ws_str).unwrap();
+        assert!(ws_record.is_some());
+    }
+
+    // T211: workspace outside allowed root returns error
+    #[test]
+    fn resolve_rejects_workspace_outside_allowed_root() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("data/state.db");
+        setup_db(&db_path);
+
+        // Create workspace outside allowed root
+        let ws = dir.path().join("forbidden/repo_y");
+        std::fs::create_dir_all(&ws).unwrap();
+        let ws_canonical = std::fs::canonicalize(&ws).unwrap();
+        let ws_str = ws_canonical.to_string_lossy().to_string();
+
+        let allowed_root =
+            std::fs::canonicalize(dir.path().join("data")).unwrap();
+        let config = WorkspaceConfig {
+            auto_workspace: true,
+            allowed_roots: AllowedRoots::new(vec![allowed_root]),
+            max_auto_workspaces: 10,
+        };
+        let router =
+            WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
+
+        let result = router.resolve_workspace(Some(&ws_str));
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            WorkspaceError::NotAllowed { path, reason } => {
+                assert_eq!(path, ws_str);
+                assert!(reason.contains("outside"));
+            }
+            other => panic!("expected NotAllowed, got: {:?}", other),
+        }
+    }
+
+    // T212: unknown workspace with auto-workspace disabled returns NotRegistered
+    #[test]
+    fn resolve_rejects_unknown_workspace_when_auto_disabled() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("data/state.db");
+        setup_db(&db_path);
+
+        let ws = dir.path().join("some_repo");
+        std::fs::create_dir_all(&ws).unwrap();
+        let ws_canonical = std::fs::canonicalize(&ws).unwrap();
+        let ws_str = ws_canonical.to_string_lossy().to_string();
+
+        let config = WorkspaceConfig {
+            auto_workspace: false,
+            allowed_roots: AllowedRoots::default(),
+            max_auto_workspaces: 10,
+        };
+        let router =
+            WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
+
+        let result = router.resolve_workspace(Some(&ws_str));
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            WorkspaceError::NotRegistered { .. }
+        ));
+    }
+
+    // T209: resolving default workspace via explicit path returns same result
+    #[test]
+    fn resolve_explicit_default_path_returns_default() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("data/state.db");
+        setup_db(&db_path);
+
+        let default_ws = std::fs::canonicalize(dir.path()).unwrap();
+        let config = WorkspaceConfig::default();
+        let router =
+            WorkspaceRouter::new(config, default_ws.clone(), db_path).unwrap();
+
+        let default_str = default_ws.to_string_lossy().to_string();
+        let resolved = router.resolve_workspace(Some(&default_str)).unwrap();
+        assert_eq!(resolved.workspace_path, default_ws);
+        assert_eq!(resolved.project_id, router.default_project_id());
+        assert!(!resolved.on_demand_indexing);
+    }
+
+    // T210: auto-discovered workspace gets correct project_id
+    #[test]
+    fn auto_discovered_workspace_gets_deterministic_project_id() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("data/state.db");
+        setup_db(&db_path);
+
+        let ws = dir.path().join("auto/myrepo");
+        std::fs::create_dir_all(&ws).unwrap();
+        let ws_canonical = std::fs::canonicalize(&ws).unwrap();
+        let ws_str = ws_canonical.to_string_lossy().to_string();
+
+        let allowed_root = std::fs::canonicalize(dir.path().join("auto")).unwrap();
+        let config = WorkspaceConfig {
+            auto_workspace: true,
+            allowed_roots: AllowedRoots::new(vec![allowed_root]),
+            max_auto_workspaces: 10,
+        };
+        let router =
+            WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
+
+        let resolved = router.resolve_workspace(Some(&ws_str)).unwrap();
+        let expected_id = generate_project_id(&ws_str);
+        assert_eq!(resolved.project_id, expected_id);
+    }
+
+    // Second resolve of same auto-discovered workspace returns known (not on-demand again)
+    #[test]
+    fn second_resolve_of_auto_discovered_is_not_on_demand() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("data/state.db");
+        setup_db(&db_path);
+
+        let ws = dir.path().join("auto2/repo_z");
+        std::fs::create_dir_all(&ws).unwrap();
+        let ws_canonical = std::fs::canonicalize(&ws).unwrap();
+        let ws_str = ws_canonical.to_string_lossy().to_string();
+
+        let allowed_root = std::fs::canonicalize(dir.path().join("auto2")).unwrap();
+        let config = WorkspaceConfig {
+            auto_workspace: true,
+            allowed_roots: AllowedRoots::new(vec![allowed_root]),
+            max_auto_workspaces: 10,
+        };
+        let router =
+            WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
+
+        // First resolve: on-demand
+        let r1 = router.resolve_workspace(Some(&ws_str)).unwrap();
+        assert!(r1.on_demand_indexing);
+
+        // Second resolve: already known
+        let r2 = router.resolve_workspace(Some(&ws_str)).unwrap();
+        assert!(!r2.on_demand_indexing);
+        assert_eq!(r1.project_id, r2.project_id);
+    }
+
+    // Nonexistent path returns error
+    #[test]
+    fn resolve_nonexistent_path_returns_error() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("data/state.db");
+        setup_db(&db_path);
+
+        let config = WorkspaceConfig::default();
+        let router =
+            WorkspaceRouter::new(config, dir.path().to_path_buf(), db_path).unwrap();
+
+        let result = router.resolve_workspace(Some("/nonexistent/path/xyz"));
+        assert!(result.is_err());
+    }
+}

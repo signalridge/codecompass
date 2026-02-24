@@ -125,16 +125,31 @@ enum Commands {
     /// Exposes tools (locate_symbol, search_code, index_status, index_repo,
     /// sync_repo) to AI coding assistants via the Model Context Protocol.
     ///
-    /// Example MCP config:
-    ///   {"command": "codecompass", "args": ["serve-mcp", "--workspace", "."]}
+    /// Examples:
+    ///   codecompass serve-mcp --workspace .
+    ///   codecompass serve-mcp --auto-workspace --allowed-root /home/user/projects
     ServeMcp {
-        /// Path to the project root (default: current directory)
+        /// Path to the default project root (default: current directory)
         #[arg(long)]
         workspace: Option<String>,
 
         /// Skip Tantivy index prewarming on startup
         #[arg(long)]
         no_prewarm: bool,
+
+        /// Enable auto-discovery of workspaces passed via the `workspace` tool parameter.
+        /// Requires at least one --allowed-root.
+        #[arg(long)]
+        auto_workspace: bool,
+
+        /// Allowed root directory prefix for auto-discovered workspaces (repeatable).
+        /// Only workspace paths under these roots will be accepted.
+        #[arg(long = "allowed-root")]
+        allowed_roots: Vec<String>,
+
+        /// Maximum number of auto-discovered workspaces to keep (LRU eviction).
+        #[arg(long, default_value = "10")]
+        max_auto_workspaces: usize,
     },
 }
 
@@ -188,9 +203,19 @@ fn main() -> anyhow::Result<()> {
         Commands::ServeMcp {
             workspace,
             no_prewarm,
+            auto_workspace,
+            allowed_roots,
+            max_auto_workspaces,
         } => {
             let path = resolve_path(workspace)?;
-            commands::serve_mcp::run(&path, config_file, no_prewarm)?;
+            let ws_config = codecompass_core::types::WorkspaceConfig {
+                auto_workspace,
+                allowed_roots: codecompass_core::types::AllowedRoots::new(
+                    allowed_roots.into_iter().map(std::path::PathBuf::from).collect(),
+                ),
+                max_auto_workspaces,
+            };
+            commands::serve_mcp::run(&path, config_file, no_prewarm, ws_config)?;
         }
     }
 
