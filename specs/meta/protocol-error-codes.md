@@ -43,6 +43,14 @@ All MCP/HTTP contracts must use these exact response metadata enums:
 Any legacy values (for example `idle`, `partial_available`) are deprecated and
 must not appear in new contracts.
 
+Implementation migration note:
+
+- some pre-migration runtimes may still emit legacy metadata values.
+- clients should map legacy values as:
+  - `idle` -> `not_indexed`
+  - `partial_available` -> `ready`
+- migration target remains canonical values only in runtime responses.
+
 ## Core Registry
 
 | Code | Category | Meaning | Typical Remediation |

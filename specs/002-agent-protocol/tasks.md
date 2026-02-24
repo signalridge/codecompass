@@ -122,6 +122,8 @@
 - [ ] T451 [US5] Add `ranking_explain_level` parameter (`off`/`basic`/`full`) to `crates/codecompass-mcp/src/tools/search_code.rs` and `crates/codecompass-mcp/src/tools/locate_symbol.rs`, with default `off`
 - [ ] T452 [US5] Implement compact explainability serialization in `crates/codecompass-query/src/ranking.rs`: `basic` mode emits normalized factors only, `full` keeps full debug payload
 - [ ] T453 [P] [US5] Add benchmark + integration coverage for explainability levels: verify `basic` payload is smaller than `full` and p95 overhead stays within target
+- [ ] T462 [US1] Implement near-duplicate suppression in query response assembly for `search_code` and `locate_symbol` (FR-105b): dedup by symbol/file-region before final top-k, include `suppressed_duplicate_count` in metadata
+- [ ] T463 [US1] Implement hard payload safety limits (FR-105c): enforce max response budget with `result_completeness: \"truncated\"` and deterministic `suggested_next_actions` instead of hard failures
 
 **Checkpoint**: Explainability levels include per-result ranking explanations when requested
 
@@ -224,6 +226,6 @@
 - [USn] label maps task to specific user story
 - Commit after each task or logical group
 - Stop at any checkpoint to validate independently
-- Total: 61 tasks, 7 phases
+- Total: 63 tasks, 7 phases
 - No new crate dependencies required
 - No new storage schemas — all queries against existing 001-core-mvp tables

@@ -55,7 +55,7 @@ Apply these in parallel with feature development to reduce rework:
 | Spec | Tasks | Phases | Task Range | Depends On | Suggested Focus |
 |------|-------|--------|-----------|------------|-----------------|
 | 001-core-mvp | 81 | 8 | T001-T081 | -- | Bootstrap + indexing + search baseline |
-| 002-agent-protocol | 61 | 7 | T082-T139 (+ T451-T453) | 001 | Agent payload and protocol optimization |
+| 002-agent-protocol | 63 | 7 | T082-T139 (+ T451-T453, T462-T463) | 001 | Agent payload and protocol optimization |
 | 003-structure-nav | 56 | 7 | T140-T195 | 002 | Structure graph and context tooling |
 | 004-workspace-transport | 47 | 5 | T196-T239 (+ T454-T456) | 003 | Multi-workspace and transport |
 | 005-vcs-core | 56 | 6 | T240-T295 | 004 | Overlay correctness core |

@@ -5,6 +5,13 @@ Transport: JSON-RPC 2.0 over stdio (v1). Extends the tool surface from 001-core-
 All responses include Protocol v1 metadata fields (defined in 001-core-mvp contracts).
 Error codes MUST follow the canonical registry in `specs/meta/protocol-error-codes.md`.
 
+## Compact Flag Scope
+
+`003` tools in this contract (`get_symbol_hierarchy`, `find_related_symbols`,
+`get_code_context`) do not define a dedicated `compact` input parameter.
+Token-size control is handled by `max_tokens` + strategy shaping in this phase.
+`compact` remains explicitly scoped to `search_code`/`locate_symbol` from `002`.
+
 ## Protocol v1 Response Metadata (inherited)
 
 Included in every tool response:

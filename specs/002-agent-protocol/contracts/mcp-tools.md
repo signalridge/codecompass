@@ -388,3 +388,8 @@ freshness_policy = "balanced"
 # Ranking explainability payload level: "off", "basic", "full"
 ranking_explain_level = "off"
 ```
+
+Compatibility note:
+
+- legacy `debug.ranking_reasons` may still be accepted by pre-migration builds.
+- when both are present, `ranking_explain_level` is authoritative.

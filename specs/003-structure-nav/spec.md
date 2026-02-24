@@ -177,6 +177,10 @@ the response does not exceed 500.
 - What happens when `symbol_edges` has stale edges after partial re-indexing?
   Edges are replaced per-file during indexing (all edges with matching
   `from_symbol_id` for the re-indexed file are deleted and re-created).
+- Why do these tools not expose `compact` in this phase?
+  `003` tools are token-budget-driven by design (`max_tokens` + strategy shaping),
+  while `compact` remains focused on `search_code`/`locate_symbol` from `002`.
+  Future phases may add `compact` here if benchmark evidence shows agent benefit.
 
 ## Requirements
 
@@ -219,6 +223,9 @@ the response does not exceed 500.
   parameter is not provided.
 - **FR-214**: Graph traversal in `get_symbol_hierarchy` and `find_related_symbols`
   MUST implement cycle detection to handle circular references safely.
+- **FR-215**: `get_symbol_hierarchy`, `find_related_symbols`, and `get_code_context`
+  in `003` rely on token-budget controls rather than a dedicated `compact` flag;
+  any `compact` extension for these tools is explicitly deferred.
 
 ### Key Entities
 

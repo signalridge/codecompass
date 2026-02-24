@@ -44,7 +44,7 @@ specs/
 | ID | Spec | Version | Tasks | Category | Status | Depends On | Blocks |
 |----|------|---------|-------|----------|--------|------------|--------|
 | 001 | [Core MVP](../001-core-mvp/) | v0.1.0 | 81 | C4 | implemented | -- | 002 |
-| 002 | [Agent Protocol](../002-agent-protocol/) | v0.2.0 | 61 | C4 | pending | 001 | 003 |
+| 002 | [Agent Protocol](../002-agent-protocol/) | v0.2.0 | 63 | C4 | pending | 001 | 003 |
 | 003 | [Structure & Navigation](../003-structure-nav/) | v0.3.0-rc | 56 | C4 | pending | 002 | 004 |
 | 004 | [Workspace & Transport](../004-workspace-transport/) | v0.3.0 | 47 | C4 | pending | 003 | 005 |
 | 005 | [VCS Core](../005-vcs-core/) | v0.9.0 | 56 | C4 | pending | 004 | 006 |
@@ -79,7 +79,7 @@ specs/
 | Spec | Tasks | Phases | Task ID Range |
 |------|-------|--------|---------------|
 | 001-core-mvp | 81 | 8 | T001-T081 |
-| 002-agent-protocol | 61 | 7 | T082-T139 (+ T451-T453) |
+| 002-agent-protocol | 63 | 7 | T082-T139 (+ T451-T453, T462-T463) |
 | 003-structure-nav | 56 | 7 | T140-T195 |
 | 004-workspace-transport | 47 | 5 | T196-T239 (+ T454-T456) |
 | 005-vcs-core | 56 | 6 | T240-T295 |
@@ -87,7 +87,7 @@ specs/
 | 007-call-graph | 39 | 6 | T325-T363 |
 | 008-semantic-hybrid | 53 | 8 | T364-T411 (+ T457-T461) |
 | 009-distribution | 39 | 6 | T412-T450 |
-| **Total** | **461** | **59** | |
+| **Total** | **463** | **59** | |
 
 > **FR/SC Numbering Note**: FR/SC prefixes follow the original spec numbering before the VCS split.
 > Specs 005-009 use FR/SC prefixes 4xx-8xx respectively (offset by one from spec IDs).

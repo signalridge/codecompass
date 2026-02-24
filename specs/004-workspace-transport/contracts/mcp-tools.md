@@ -302,7 +302,7 @@ Readiness probe for load balancers, monitoring, and agent pre-flight checks.
 | `projects[].symbol_count` | int | Number of indexed symbols. |
 | `version` | string | CodeCompass version. |
 | `uptime_seconds` | int | Seconds since server started. |
-| `workspace_warmset` | object | Warmset status for startup prewarm optimization. |
+| `workspace_warmset` | object | Warmset status for startup prewarm optimization (capacity is configurable; examples use `3`). |
 
 ### Status Logic
 

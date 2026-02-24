@@ -462,10 +462,10 @@ index schema.
   - `semantic_ratio`,
   - per-query-type overrides.
 - Local embedding profiles should ship with Rust-friendly presets:
-  - `laptop_fast`: `NomicEmbedTextV15Q`, `BGESmallENV15Q`
-  - `balanced_code`: `BGEBaseENV15Q`, `JinaEmbeddingsV2BaseCode`
-  - `high_quality_code`: `BGELargeENV15`, `GTELargeENV15`, `SnowflakeArcticEmbedL`
-- Add optional profile advisor (`semantic_profile_advisor = suggest`) that inspects
+  - `fast_local`: `NomicEmbedTextV15Q`, `BGESmallENV15Q`
+  - `code_quality`: `BGEBaseENV15Q`, `JinaEmbeddingsV2BaseCode`
+  - `high_quality`: `BGELargeENV15`, `GTELargeENV15`, `SnowflakeArcticEmbedL`
+- Add optional profile advisor (`profile_advisor_mode = suggest`) that inspects
   repo size/language mix and returns a recommendation without silently changing
   configured profile.
 
@@ -1133,7 +1133,10 @@ for multi-workspace support (see [Section 10.7](#107-multi-workspace-auto-discov
 - `freshness_status`: `fresh | stale | syncing`.
 - `indexing_status`: `not_indexed | indexing | ready | failed`.
 - `result_completeness`: `complete | partial | truncated`.
-- `ranking_reasons` (debug mode): array of deterministic scoring factors.
+- compatibility guidance for pre-migration runtimes:
+  - `idle` -> `not_indexed`
+  - `partial_available` -> `ready`
+- `ranking_reasons` (`ranking_explain_level != off`): array of deterministic scoring factors.
 - `source_layer`: `base | overlay` for VCS mode.
 - `ref`: effective query ref (`main`, feature branch, or `live`).
 - `safety_limit_applied`: boolean, true when hard caps are enforced.
@@ -1154,7 +1157,7 @@ This keeps agent behavior predictable and reduces unnecessary repeated tool call
 ### Response contract principles
 
 - always include `repo`, `path`, `line_start`, `line_end`,
-- include `ranking_reasons` in debug mode (single canonical debug field),
+- include `ranking_reasons` when `ranking_explain_level` is enabled,
 - return compact machine-readable JSON for agent orchestration.
 - deduplicate near-identical hits by symbol/file region before final top-k emission.
 - never hard-fail on size pressure; return `result_completeness: "truncated"` with actionable metadata.
