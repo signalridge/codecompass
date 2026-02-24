@@ -13,6 +13,8 @@ pub(super) struct ToolCallParams<'a> {
     pub project_id: &'a str,
     pub prewarm_status: &'a AtomicU8,
     pub server_start: &'a Instant,
+    pub notifier: Arc<dyn ProgressNotifier>,
+    pub progress_token: Option<String>,
 }
 
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 64 * 1024;
@@ -34,6 +36,8 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
         conn,
         workspace,
         project_id,
+        notifier,
+        progress_token,
         ..
     } = params;
 
@@ -994,12 +998,25 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
                 "file_count": file_count,
                 "symbol_count": symbol_count,
                 "compatibility_reason": compatibility_reason,
-                "active_job": active_job.map(|j| json!({
-                    "job_id": j.job_id,
-                    "mode": j.mode,
-                    "status": j.status,
-                    "ref": j.r#ref,
-                })),
+                "active_job": active_job.map(|j| {
+                    let total = j.files_scanned.max(1);
+                    let pct = if j.files_scanned > 0 {
+                        Some(((j.files_indexed as f64 / total as f64) * 100.0).min(99.0) as u32)
+                    } else {
+                        None
+                    };
+                    json!({
+                        "job_id": j.job_id,
+                        "mode": j.mode,
+                        "status": j.status,
+                        "ref": j.r#ref,
+                        "progress_token": j.progress_token,
+                        "files_scanned": j.files_scanned,
+                        "files_indexed": j.files_indexed,
+                        "symbols_extracted": j.symbols_extracted,
+                        "estimated_completion_pct": pct,
+                    })
+                }),
                 "recent_jobs": recent_jobs.iter().map(|j| json!({
                     "job_id": j.job_id,
                     "ref": j.r#ref,
@@ -1083,15 +1100,83 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
 
             match cmd.spawn() {
                 Ok(child) => {
-                    // Reap the child in a background thread to avoid zombie processes
+                    // T216: Emit begin notification and start progress polling
+                    if let Some(ref token) = progress_token {
+                        notifier.emit_progress(
+                            token,
+                            "Indexing",
+                            "Starting indexer...",
+                            Some(0),
+                        );
+                    }
+
+                    // T215: Background thread that polls progress and emits notifications
+                    let notifier_clone = Arc::clone(&notifier);
+                    let poll_token = progress_token.clone();
+                    let poll_db_path =
+                        config.project_data_dir(project_id).join(constants::STATE_DB_FILE);
+                    let poll_project_id = project_id.to_string();
                     std::thread::spawn(move || {
                         let mut child = child;
-                        let _ = child.wait();
+                        let mut last_scanned = 0i64;
+                        let mut last_indexed = 0i64;
+                        let mut last_symbols = 0i64;
+
+                        loop {
+                            match child.try_wait() {
+                                Ok(Some(_status)) => {
+                                    // Child exited — emit end notification
+                                    if let Some(ref token) = poll_token {
+                                        notifier_clone.emit_end(token, "Indexing", "Complete");
+                                    }
+                                    break;
+                                }
+                                Ok(None) => {
+                                    // Still running — poll progress from SQLite
+                                    if let Some(ref token) = poll_token
+                                        && let Ok(conn) =
+                                            codecompass_state::db::open_connection(&poll_db_path)
+                                        && let Ok(Some(job)) =
+                                            codecompass_state::jobs::get_active_job(
+                                                &conn,
+                                                &poll_project_id,
+                                            )
+                                        && (job.files_scanned != last_scanned
+                                            || job.files_indexed != last_indexed
+                                            || job.symbols_extracted != last_symbols)
+                                    {
+                                        last_scanned = job.files_scanned;
+                                        last_indexed = job.files_indexed;
+                                        last_symbols = job.symbols_extracted;
+                                        let total = last_scanned.max(1);
+                                        let pct = ((last_indexed as f64 / total as f64) * 100.0)
+                                            .min(99.0)
+                                            as u32;
+                                        let msg = format!(
+                                            "Scanned {} files, indexed {}, {} symbols",
+                                            last_scanned, last_indexed, last_symbols,
+                                        );
+                                        notifier_clone.emit_progress(
+                                            token,
+                                            "Indexing",
+                                            &msg,
+                                            Some(pct),
+                                        );
+                                    }
+                                    std::thread::sleep(std::time::Duration::from_secs(1));
+                                }
+                                Err(_) => break,
+                            }
+                        }
                     });
+
                     let mut payload = serde_json::Map::new();
                     payload.insert("job_id".to_string(), json!(job_id));
                     payload.insert("status".to_string(), json!("running"));
                     payload.insert("mode".to_string(), json!(mode));
+                    if let Some(ref token) = progress_token {
+                        payload.insert("progress_token".to_string(), json!(token));
+                    }
                     if tool_name == "sync_repo" {
                         payload.insert("changed_files".to_string(), Value::Null);
                     } else {

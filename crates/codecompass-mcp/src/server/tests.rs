@@ -78,6 +78,8 @@ fn t065_tools_list_returns_all_registered_tools() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -261,6 +263,8 @@ fn t066_locate_symbol_via_jsonrpc() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -400,6 +404,8 @@ fn t095_locate_symbol_detail_level_location() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -489,6 +495,8 @@ fn t096_locate_symbol_detail_level_signature_default() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -577,6 +585,8 @@ fn t097_search_code_detail_level_context() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -651,6 +661,8 @@ fn t102_get_file_outline_nested_tree() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -730,6 +742,8 @@ fn t103_get_file_outline_top_level_only() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -791,6 +805,8 @@ fn t104_get_file_outline_nonexistent_file() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -856,6 +872,8 @@ fn t104_get_file_outline_existing_file_without_symbols_returns_empty() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -910,6 +928,8 @@ fn t165_get_symbol_hierarchy_ancestors_via_jsonrpc() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -980,6 +1000,8 @@ fn t166_get_symbol_hierarchy_descendants_via_jsonrpc() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -1047,6 +1069,8 @@ fn t175_find_related_symbols_scope_file_via_jsonrpc() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -1144,6 +1168,8 @@ fn t176_find_related_symbols_scope_module_includes_imported() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -1205,6 +1231,8 @@ fn t185_get_code_context_breadth_respects_budget() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -1258,6 +1286,8 @@ fn t186_and_t187_get_code_context_depth_and_truncation() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
     assert!(depth_response.error.is_none(), "expected success");
@@ -1312,6 +1342,8 @@ fn t186_and_t187_get_code_context_depth_and_truncation() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
     assert!(tiny_budget_response.error.is_none(), "expected success");
@@ -1362,6 +1394,8 @@ fn t191_new_tools_error_codes_follow_protocol_registry() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
     assert!(
@@ -1402,6 +1436,8 @@ fn t191_new_tools_error_codes_follow_protocol_registry() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
     assert!(
@@ -1463,6 +1499,8 @@ fn t191_get_code_context_negative_max_tokens_returns_invalid_max_tokens() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -1524,6 +1562,8 @@ fn t194_symbol_hierarchy_validation_precision() {
                 project_id,
                 prewarm_status: &test_prewarm_status(),
                 server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
             },
         );
         if response.error.is_some() {
@@ -1586,6 +1626,8 @@ fn t195_code_context_budget_validation() {
                 project_id,
                 prewarm_status: &test_prewarm_status(),
                 server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
             },
         );
         assert!(response.error.is_none(), "context request should succeed");
@@ -1634,6 +1676,8 @@ fn t111_health_check_on_healthy_system() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -1757,6 +1801,8 @@ fn t111_health_check_active_job_sets_indexing_status() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -1807,6 +1853,8 @@ fn t116_health_check_warming_status_during_prewarm() {
             project_id,
             prewarm_status: &pw,
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -1842,6 +1890,8 @@ fn t116_health_check_warming_status_during_prewarm() {
             project_id,
             prewarm_status: &pw,
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -1896,6 +1946,8 @@ fn t117_health_check_no_prewarm_skipped() {
             project_id,
             prewarm_status: &pw,
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -1948,6 +2000,8 @@ fn t118_health_check_prewarm_failed_reports_error() {
             project_id,
             prewarm_status: &pw,
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -2025,6 +2079,8 @@ fn t119_health_check_not_indexed_registered_project_sets_error() {
             project_id: current_project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -2081,6 +2137,8 @@ fn t122_search_code_ranking_reasons_enabled() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -2162,6 +2220,8 @@ fn t123_search_code_ranking_reasons_disabled() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -2212,6 +2272,8 @@ fn t124_search_code_ranking_reasons_basic_mode() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -2268,6 +2330,8 @@ fn t125_search_code_compact_context_omits_heavy_fields() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
     assert!(base_response.error.is_none(), "expected baseline success");
@@ -2309,6 +2373,8 @@ fn t125_search_code_compact_context_omits_heavy_fields() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
     assert!(compact_response.error.is_none(), "expected compact success");
@@ -2372,6 +2438,8 @@ fn t126_search_code_payload_safety_limit_truncates() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -2433,6 +2501,8 @@ fn t127_search_code_reports_suppressed_duplicate_count() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -2496,6 +2566,8 @@ fn t128_locate_symbol_payload_safety_limit_has_followups() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -2549,6 +2621,8 @@ fn t134_tools_list_schema_verification() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -2679,6 +2753,8 @@ fn t135_full_e2e_workflow() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
     assert!(response.error.is_none(), "health_check should succeed");
@@ -2712,6 +2788,8 @@ fn t135_full_e2e_workflow() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
     assert!(
@@ -2753,6 +2831,8 @@ fn t135_full_e2e_workflow() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
     assert!(response.error.is_none(), "get_file_outline should succeed");
@@ -2790,6 +2870,8 @@ fn t135_full_e2e_workflow() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
     assert!(
@@ -2852,6 +2934,8 @@ fn t190_new_navigation_tools_jsonrpc_e2e() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
     assert!(
@@ -2886,6 +2970,8 @@ fn t190_new_navigation_tools_jsonrpc_e2e() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
     assert!(
@@ -2921,6 +3007,8 @@ fn t190_new_navigation_tools_jsonrpc_e2e() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
     assert!(
@@ -2976,6 +3064,8 @@ fn t139_backward_compatibility_default_detail_level() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
     assert!(
@@ -3028,6 +3118,8 @@ fn t139_backward_compatibility_default_detail_level() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
     assert!(
@@ -3089,6 +3181,8 @@ fn t138_performance_benchmark() {
                 project_id,
                 prewarm_status: &test_prewarm_status(),
                 server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
             },
         );
         let elapsed = start.elapsed();
@@ -3126,6 +3220,8 @@ fn t138_performance_benchmark() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
     let elapsed = start.elapsed();
@@ -3361,6 +3457,8 @@ fn t131_search_code_balanced_policy_stale_index() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -3427,6 +3525,8 @@ fn t132_search_code_strict_policy_stale_index_blocks() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 
@@ -3517,6 +3617,8 @@ fn t133_search_code_best_effort_policy_stale_index() {
             project_id,
             prewarm_status: &test_prewarm_status(),
             server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
         },
     );
 

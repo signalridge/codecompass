@@ -1,5 +1,6 @@
 use crate::protocol::{JsonRpcRequest, JsonRpcResponse, ProtocolMetadata};
 use crate::tools;
+use crate::notifications::{McpProgressNotifier, NullProgressNotifier, ProgressNotifier};
 use crate::workspace_router::WorkspaceRouter;
 use codecompass_core::config::Config;
 use codecompass_core::constants;
@@ -21,7 +22,7 @@ use serde_json::{Value, json};
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Instant;
 use tracing::{error, info};
@@ -97,8 +98,9 @@ pub fn run_server(
     }
 
     let stdin = io::stdin();
-    let stdout = io::stdout();
-    let mut stdout = stdout.lock();
+    // T214: Wrap stdout in Arc<Mutex> so it can be shared with the progress notifier.
+    let writer: Arc<Mutex<Box<dyn Write + Send>>> =
+        Arc::new(Mutex::new(Box::new(io::stdout())));
 
     info!("MCP server started");
 
@@ -119,8 +121,7 @@ pub fn run_server(
             Ok(r) => r,
             Err(e) => {
                 let resp = JsonRpcResponse::error(None, -32700, format!("Parse error: {}", e));
-                writeln!(stdout, "{}", serde_json::to_string(&resp)?)?;
-                stdout.flush()?;
+                write_response(&writer, &resp)?;
                 continue;
             }
         };
@@ -158,8 +159,7 @@ pub fn run_server(
                 }
                 Err(e) => {
                     let resp = workspace_error_to_response(request.id.clone(), &e);
-                    writeln!(stdout, "{}", serde_json::to_string(&resp)?)?;
-                    stdout.flush()?;
+                    write_response(&writer, &resp)?;
                     continue;
                 }
             }
@@ -170,6 +170,21 @@ pub fn run_server(
         let eff_db_path = eff_data_dir.join(constants::STATE_DB_FILE);
         let index_runtime = load_index_runtime(&eff_data_dir);
         let conn = codecompass_state::db::open_connection(&eff_db_path).ok();
+
+        // T214: Extract _meta.progressToken from request and create notifier
+        let progress_token = request
+            .params
+            .get("_meta")
+            .and_then(|m| m.get("progressToken"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let notifier: Arc<dyn ProgressNotifier> = if progress_token.is_some() {
+            Arc::new(McpProgressNotifier::new(Arc::clone(&writer)))
+        } else {
+            Arc::new(NullProgressNotifier)
+        };
+
         let request_ctx = RequestContext {
             config: &config,
             index_set: index_runtime.index_set.as_ref(),
@@ -180,10 +195,11 @@ pub fn run_server(
             project_id: &eff_project_id,
             prewarm_status: &prewarm_status,
             server_start: &server_start,
+            notifier,
+            progress_token: progress_token.as_deref(),
         };
         let response = handle_request_with_ctx(&request, &request_ctx);
-        writeln!(stdout, "{}", serde_json::to_string(&response)?)?;
-        stdout.flush()?;
+        write_response(&writer, &response)?;
     }
 
     Ok(())
@@ -322,6 +338,20 @@ fn bootstrap_and_index(
     Ok(())
 }
 
+/// Write a JSON-RPC response to the shared writer.
+fn write_response(
+    writer: &Arc<Mutex<Box<dyn Write + Send>>>,
+    response: &JsonRpcResponse,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let serialized = serde_json::to_string(response)?;
+    let mut w = writer
+        .lock()
+        .map_err(|e| format!("stdout lock poisoned: {}", e))?;
+    writeln!(w, "{}", serialized)?;
+    w.flush()?;
+    Ok(())
+}
+
 struct RequestContext<'a> {
     config: &'a Config,
     index_set: Option<&'a IndexSet>,
@@ -332,6 +362,8 @@ struct RequestContext<'a> {
     project_id: &'a str,
     prewarm_status: &'a AtomicU8,
     server_start: &'a Instant,
+    notifier: Arc<dyn ProgressNotifier>,
+    progress_token: Option<&'a str>,
 }
 
 fn handle_request_with_ctx(request: &JsonRpcRequest, ctx: &RequestContext<'_>) -> JsonRpcResponse {
@@ -379,6 +411,8 @@ fn handle_request_with_ctx(request: &JsonRpcRequest, ctx: &RequestContext<'_>) -
                 project_id: ctx.project_id,
                 prewarm_status: ctx.prewarm_status,
                 server_start: ctx.server_start,
+                notifier: ctx.notifier.clone(),
+                progress_token: ctx.progress_token.map(|s| s.to_string()),
             })
         }
         _ => JsonRpcResponse::error(
