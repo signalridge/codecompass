@@ -284,7 +284,8 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
             ) {
                 Ok(response) => {
                     let mut response = response;
-                    let (results, suppressed_duplicate_count) =
+                    let ranking_reasons = response.ranking_reasons.take();
+                    let (results, kept_reason_indices, suppressed_duplicate_count) =
                         dedup_search_results(std::mem::take(&mut response.results));
                     if suppressed_duplicate_count > 0 {
                         metadata.suppressed_duplicate_count = Some(suppressed_duplicate_count);
@@ -319,9 +320,11 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
                         metadata.safety_limit_applied = Some(true);
                     }
 
-                    if let Some(reasons) = &response.ranking_reasons {
+                    if let Some(reasons) = ranking_reasons.as_ref() {
+                        let aligned_reasons =
+                            align_ranking_reasons_to_dedup(reasons, &kept_reason_indices);
                         metadata.ranking_reasons = ranking_reasons_payload(
-                            reasons.iter().take(filtered.len()).cloned().collect(),
+                            aligned_reasons.into_iter().take(filtered.len()).collect(),
                             ranking_explain_level,
                         );
                     }
@@ -1065,7 +1068,7 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
             // Use current_exe() to find the binary reliably (works in MCP agent setups)
             let exe = std::env::current_exe().unwrap_or_else(|_| "codecompass".into());
             let workspace_str = workspace.to_string_lossy();
-            let job_id = format!("{:016x}", rand_u64());
+            let job_id = codecompass_core::ids::new_job_id();
 
             let mut cmd = std::process::Command::new(exe);
             cmd.arg("index")
@@ -1557,6 +1560,7 @@ fn check_and_enforce_freshness(
         current_head,
     } = &policy_action
     {
+        let block_metadata = metadata.clone();
         return FreshnessEnforced {
             block_response: Some(tool_error_response(
                 id,
@@ -1569,7 +1573,7 @@ fn check_and_enforce_freshness(
                 })),
                 metadata,
             )),
-            metadata: ProtocolMetadata::new(effective_ref), // unused when blocking
+            metadata: block_metadata,
         };
     }
     if policy_action == PolicyAction::ProceedWithStaleIndicatorAndSync {
@@ -1648,13 +1652,16 @@ fn ranking_reasons_payload(
     }
 }
 
-fn dedup_search_results(results: Vec<search::SearchResult>) -> (Vec<search::SearchResult>, usize) {
+fn dedup_search_results(
+    results: Vec<search::SearchResult>,
+) -> (Vec<search::SearchResult>, Vec<usize>, usize) {
     use std::collections::HashSet;
 
     let mut seen = HashSet::new();
     let mut deduped = Vec::with_capacity(results.len());
+    let mut kept_indices = Vec::with_capacity(results.len());
     let mut suppressed = 0usize;
-    for result in results {
+    for (index, result) in results.into_iter().enumerate() {
         let key =
             if let Some(stable_id) = result.symbol_stable_id.as_ref().filter(|s| !s.is_empty()) {
                 format!("stable:{}", stable_id)
@@ -1670,11 +1677,12 @@ fn dedup_search_results(results: Vec<search::SearchResult>) -> (Vec<search::Sear
             };
         if seen.insert(key) {
             deduped.push(result);
+            kept_indices.push(index);
         } else {
             suppressed += 1;
         }
     }
-    (deduped, suppressed)
+    (deduped, kept_indices, suppressed)
 }
 
 fn dedup_locate_results(results: Vec<locate::LocateResult>) -> (Vec<locate::LocateResult>, usize) {
@@ -1699,6 +1707,22 @@ fn dedup_locate_results(results: Vec<locate::LocateResult>) -> (Vec<locate::Loca
         }
     }
     (deduped, suppressed)
+}
+
+fn align_ranking_reasons_to_dedup(
+    reasons: &[codecompass_core::types::RankingReasons],
+    kept_indices: &[usize],
+) -> Vec<codecompass_core::types::RankingReasons> {
+    let mut aligned = Vec::with_capacity(kept_indices.len());
+    for (new_index, old_index) in kept_indices.iter().copied().enumerate() {
+        let Some(reason) = reasons.get(old_index) else {
+            continue;
+        };
+        let mut updated = reason.clone();
+        updated.result_index = new_index;
+        aligned.push(updated);
+    }
+    aligned
 }
 
 fn enforce_payload_safety_limit(results: Vec<Value>, max_bytes: usize) -> (Vec<Value>, bool) {
@@ -1772,16 +1796,6 @@ fn deterministic_locate_suggested_actions(
     ]
 }
 
-fn rand_u64() -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    std::time::SystemTime::now().hash(&mut hasher);
-    std::thread::current().id().hash(&mut hasher);
-    std::process::id().hash(&mut hasher);
-    hasher.finish()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1825,9 +1839,10 @@ mod tests {
             snippet: None,
         };
 
-        let (deduped, suppressed) = dedup_search_results(vec![base, second, third]);
+        let (deduped, kept_indices, suppressed) = dedup_search_results(vec![base, second, third]);
         assert_eq!(suppressed, 1);
         assert_eq!(deduped.len(), 2);
+        assert_eq!(kept_indices, vec![0, 2]);
     }
 
     #[test]
@@ -1886,6 +1901,104 @@ mod tests {
         assert!(first.get("path_boost").is_some());
         assert!(first.get("semantic_similarity").is_some());
         assert!(first.get("qualified_name_boost").is_none());
+    }
+
+    #[test]
+    fn ranking_reasons_remain_aligned_after_dedup() {
+        let results = vec![
+            search::SearchResult {
+                result_id: "r1".to_string(),
+                symbol_id: Some("sym1".to_string()),
+                symbol_stable_id: Some("stable1".to_string()),
+                result_type: "symbol".to_string(),
+                path: "src/lib.rs".to_string(),
+                line_start: 10,
+                line_end: 20,
+                kind: Some("fn".to_string()),
+                name: Some("foo".to_string()),
+                qualified_name: Some("foo".to_string()),
+                language: "rust".to_string(),
+                signature: None,
+                visibility: None,
+                score: 2.0,
+                snippet: None,
+            },
+            search::SearchResult {
+                result_id: "r2".to_string(),
+                symbol_id: Some("sym2".to_string()),
+                symbol_stable_id: Some("stable1".to_string()),
+                result_type: "symbol".to_string(),
+                path: "src/lib.rs".to_string(),
+                line_start: 10,
+                line_end: 20,
+                kind: Some("fn".to_string()),
+                name: Some("foo_dup".to_string()),
+                qualified_name: Some("foo_dup".to_string()),
+                language: "rust".to_string(),
+                signature: None,
+                visibility: None,
+                score: 1.5,
+                snippet: None,
+            },
+            search::SearchResult {
+                result_id: "r3".to_string(),
+                symbol_id: Some("sym3".to_string()),
+                symbol_stable_id: Some("stable3".to_string()),
+                result_type: "symbol".to_string(),
+                path: "src/main.rs".to_string(),
+                line_start: 30,
+                line_end: 40,
+                kind: Some("fn".to_string()),
+                name: Some("bar".to_string()),
+                qualified_name: Some("bar".to_string()),
+                language: "rust".to_string(),
+                signature: None,
+                visibility: None,
+                score: 1.0,
+                snippet: None,
+            },
+        ];
+        let reasons = vec![
+            codecompass_core::types::RankingReasons {
+                result_index: 0,
+                exact_match_boost: 5.0,
+                qualified_name_boost: 1.0,
+                path_affinity: 0.0,
+                definition_boost: 1.0,
+                kind_match: 0.0,
+                bm25_score: 10.0,
+                final_score: 17.0,
+            },
+            codecompass_core::types::RankingReasons {
+                result_index: 1,
+                exact_match_boost: 0.0,
+                qualified_name_boost: 1.0,
+                path_affinity: 0.0,
+                definition_boost: 1.0,
+                kind_match: 0.0,
+                bm25_score: 9.0,
+                final_score: 11.0,
+            },
+            codecompass_core::types::RankingReasons {
+                result_index: 2,
+                exact_match_boost: 0.0,
+                qualified_name_boost: 0.0,
+                path_affinity: 1.0,
+                definition_boost: 1.0,
+                kind_match: 0.0,
+                bm25_score: 8.0,
+                final_score: 10.0,
+            },
+        ];
+
+        let (_deduped, kept_indices, suppressed) = dedup_search_results(results);
+        assert_eq!(suppressed, 1);
+        let aligned = align_ranking_reasons_to_dedup(&reasons, &kept_indices);
+        assert_eq!(aligned.len(), 2);
+        assert_eq!(aligned[0].result_index, 0);
+        assert_eq!(aligned[0].bm25_score, 10.0);
+        assert_eq!(aligned[1].result_index, 1);
+        assert_eq!(aligned[1].bm25_score, 8.0);
     }
 
     #[test]

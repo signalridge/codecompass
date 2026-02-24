@@ -57,6 +57,7 @@ pub fn run_server(
     let data_dir = config.project_data_dir(&project_id);
     let db_path = data_dir.join(constants::STATE_DB_FILE);
     let server_start = Instant::now();
+    let mut conn = open_state_connection(&config, &db_path);
 
     // Shared prewarm status
     let prewarm_status = Arc::new(AtomicU8::new(PREWARM_PENDING));
@@ -119,8 +120,11 @@ pub fn run_server(
             }
         };
 
+        if conn.is_none() {
+            conn = open_state_connection(&config, &db_path);
+        }
+
         let index_runtime = load_index_runtime(&data_dir);
-        let conn = codecompass_state::db::open_connection(&db_path).ok();
         let request_ctx = RequestContext {
             config: &config,
             index_set: index_runtime.index_set.as_ref(),
@@ -229,6 +233,21 @@ fn load_index_runtime(data_dir: &Path) -> IndexRuntime {
             }
         }
     }
+}
+
+fn open_state_connection(config: &Config, db_path: &Path) -> Option<rusqlite::Connection> {
+    let conn = codecompass_state::db::open_connection_with_config(
+        db_path,
+        config.storage.busy_timeout_ms,
+        config.storage.cache_size,
+    )
+    .ok();
+    if let Some(c) = conn.as_ref()
+        && let Err(err) = codecompass_state::schema::create_tables(c)
+    {
+        error!("failed to initialize SQLite schema: {}", err);
+    }
+    conn
 }
 
 fn classify_index_open_error(err: &StateError) -> (SchemaStatus, String) {
