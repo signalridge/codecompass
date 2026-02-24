@@ -106,6 +106,28 @@ pub fn update_index_status(
     Ok(())
 }
 
+/// Attempt to claim bootstrap indexing for a workspace.
+///
+/// Returns `true` when this caller transitions the workspace into `indexing`
+/// state and should launch bootstrap indexing. Returns `false` when another
+/// caller already claimed indexing.
+pub fn claim_bootstrap_indexing(
+    conn: &Connection,
+    workspace_path: &str,
+    now: &str,
+) -> Result<bool, StateError> {
+    let updated = conn
+        .execute(
+            "UPDATE known_workspaces
+             SET index_status = 'indexing', last_used_at = ?2
+             WHERE workspace_path = ?1
+               AND index_status != 'indexing'",
+            params![workspace_path, now],
+        )
+        .map_err(StateError::sqlite)?;
+    Ok(updated > 0)
+}
+
 /// List all registered workspaces, ordered by last_used_at descending.
 pub fn list_workspaces(conn: &Connection) -> Result<Vec<KnownWorkspace>, StateError> {
     let mut stmt = conn
@@ -319,6 +341,25 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(ws.index_status, "ready");
+    }
+
+    #[test]
+    fn test_claim_bootstrap_indexing_is_single_winner() {
+        let conn = setup_test_db();
+        insert_test_project(&conn, "proj_1", "/home/user/project-a");
+        let now = "2026-01-01T00:00:00Z";
+
+        register_workspace(&conn, "/home/user/project-a", Some("proj_1"), true, now).unwrap();
+
+        let first = claim_bootstrap_indexing(&conn, "/home/user/project-a", now).unwrap();
+        let second = claim_bootstrap_indexing(&conn, "/home/user/project-a", now).unwrap();
+        assert!(first);
+        assert!(!second);
+
+        let ws = get_workspace(&conn, "/home/user/project-a")
+            .unwrap()
+            .unwrap();
+        assert_eq!(ws.index_status, "indexing");
     }
 
     #[test]

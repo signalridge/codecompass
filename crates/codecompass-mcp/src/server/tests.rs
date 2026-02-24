@@ -1735,6 +1735,19 @@ fn t111_health_check_on_healthy_system() {
 
     // Prewarm status should be present
     assert!(payload.get("prewarm_status").is_some());
+    // Warmset metadata should be present
+    let warmset = payload.get("workspace_warmset").unwrap();
+    assert!(warmset.get("enabled").is_some());
+    assert!(warmset.get("capacity").is_some());
+    assert!(warmset.get("members").is_some());
+
+    // Per-project schema compatibility fields should be present
+    let projects = payload.get("projects").unwrap().as_array().unwrap();
+    assert!(!projects.is_empty());
+    let proj = &projects[0];
+    assert!(proj.get("schema_status").is_some());
+    assert!(proj.get("current_schema_version").is_some());
+    assert!(proj.get("required_schema_version").is_some());
 }
 
 #[test]
@@ -1816,6 +1829,90 @@ fn t111_health_check_active_job_sets_indexing_status() {
     assert!(
         payload.get("active_job").is_some(),
         "active_job should be present when an indexing job is running"
+    );
+}
+
+#[test]
+fn t111_health_check_warming_has_priority_over_indexing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (index_set, db_path) = build_fixture_index_with_db(tmp.path());
+    let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let project = Project {
+        project_id: project_id.to_string(),
+        repo_root: workspace.to_string_lossy().to_string(),
+        display_name: Some("test".to_string()),
+        default_ref: "live".to_string(),
+        vcs_mode: false,
+        schema_version: codecompass_core::constants::SCHEMA_VERSION,
+        parser_version: codecompass_core::constants::PARSER_VERSION,
+        created_at: "2026-01-01T00:00:00Z".to_string(),
+        updated_at: "2026-01-01T00:00:00Z".to_string(),
+    };
+    codecompass_state::project::create_project(&conn, &project).unwrap();
+
+    codecompass_state::jobs::create_job(
+        &conn,
+        &codecompass_state::jobs::IndexJob {
+            job_id: "job_active".to_string(),
+            project_id: project_id.to_string(),
+            r#ref: "live".to_string(),
+            mode: "incremental".to_string(),
+            head_commit: Some("abc123".to_string()),
+            sync_id: None,
+            status: "running".to_string(),
+            changed_files: 1,
+            duration_ms: None,
+            error_message: None,
+            retry_count: 0,
+            progress_token: None,
+            files_scanned: 0,
+            files_indexed: 0,
+            symbols_extracted: 0,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        },
+    )
+    .unwrap();
+
+    let pw = AtomicU8::new(PREWARM_IN_PROGRESS);
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "health_check",
+            "arguments": {}
+        }),
+    );
+
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &Config::default(),
+            index_set: Some(&index_set),
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace,
+            project_id,
+            prewarm_status: &pw,
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    assert!(response.error.is_none(), "expected success");
+    let result = response.result.as_ref().unwrap();
+    let content = result.get("content").unwrap().as_array().unwrap();
+    let text = content[0].get("text").unwrap().as_str().unwrap();
+    let payload: serde_json::Value = serde_json::from_str(text).unwrap();
+
+    assert_eq!(
+        payload.get("status").unwrap().as_str().unwrap(),
+        "warming",
+        "warming should take priority over indexing when both are present"
     );
 }
 

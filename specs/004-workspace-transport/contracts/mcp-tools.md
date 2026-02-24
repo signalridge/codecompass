@@ -292,7 +292,7 @@ Readiness probe for load balancers, monitoring, and agent pre-flight checks.
 | `projects` | array | Per-project status entries. |
 | `projects[].project_id` | string | Internal project identifier. |
 | `projects[].repo_root` | string | Absolute path to project root. |
-| `projects[].index_status` | string | `ready`, `indexing`, `stale`, `error`. |
+| `projects[].index_status` | string | `ready`, `warming`, `indexing`, `error`. |
 | `projects[].schema_status` | string | `compatible`, `not_indexed`, `reindex_required`, `corrupt_manifest`. |
 | `projects[].current_schema_version` | int | Schema version found in local index metadata. |
 | `projects[].required_schema_version` | int | Schema version required by running binary. |

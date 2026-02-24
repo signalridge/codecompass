@@ -19,6 +19,7 @@ use codecompass_query::related;
 use codecompass_query::search;
 use codecompass_state::tantivy_index::IndexSet;
 use serde_json::{Value, json};
+use std::collections::HashSet;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::process::Stdio;
@@ -63,6 +64,7 @@ pub(crate) fn collect_warmset_project_ids(
     capacity: usize,
 ) -> Vec<String> {
     let mut project_ids = vec![default_project_id.to_string()];
+    let mut seen: HashSet<String> = HashSet::from([default_project_id.to_string()]);
     if let Ok(conn) = codecompass_state::db::open_connection(db_path)
         && let Ok(recent) = codecompass_state::workspace::list_recent_workspaces(&conn, capacity)
     {
@@ -70,7 +72,7 @@ pub(crate) fn collect_warmset_project_ids(
             let pid = ws
                 .project_id
                 .unwrap_or_else(|| generate_project_id(&ws.workspace_path));
-            if !project_ids.contains(&pid) {
+            if seen.insert(pid.clone()) {
                 project_ids.push(pid);
             }
         }
@@ -79,6 +81,29 @@ pub(crate) fn collect_warmset_project_ids(
         project_ids.truncate(capacity);
     }
     project_ids
+}
+
+pub(crate) fn collect_warmset_members(
+    conn: Option<&rusqlite::Connection>,
+    default_workspace: &Path,
+    capacity: usize,
+) -> Vec<String> {
+    let default_member = default_workspace.to_string_lossy().to_string();
+    let mut members = vec![default_member.clone()];
+    let mut seen: HashSet<String> = HashSet::from([default_member]);
+    if let Some(c) = conn
+        && let Ok(recent) = codecompass_state::workspace::list_recent_workspaces(c, capacity)
+    {
+        for ws in recent {
+            if seen.insert(ws.workspace_path.clone()) {
+                members.push(ws.workspace_path);
+            }
+        }
+    }
+    if members.len() > capacity {
+        members.truncate(capacity);
+    }
+    members
 }
 
 pub(crate) fn prewarm_projects(status: Arc<AtomicU8>, config: Config, project_ids: Vec<String>) {
@@ -217,11 +242,13 @@ pub fn run_server(
 
                     // T205: On-demand indexing for auto-discovered workspaces
                     if resolved.on_demand_indexing {
-                        if let Err(e) = bootstrap_and_index(
-                            &resolved.workspace_path,
-                            &resolved.project_id,
-                            &eff_data_dir,
-                        ) {
+                        if resolved.should_bootstrap
+                            && let Err(e) = bootstrap_and_index(
+                                &resolved.workspace_path,
+                                &resolved.project_id,
+                                &eff_data_dir,
+                            )
+                        {
                             error!(
                                 workspace = %resolved.workspace_path.display(),
                                 "on-demand bootstrap failed: {}", e
@@ -736,6 +763,15 @@ pub fn workspace_error_to_response_public(
     workspace_error_to_response(id, err)
 }
 
+/// Public wrapper for tool text payload responses used by HTTP transport.
+pub fn tool_text_response_public(id: Option<Value>, payload: Value) -> JsonRpcResponse {
+    tool_calls::tool_text_response(id, payload)
+}
+
+/// Public wrapper for index-open error classification used by HTTP transport.
+pub fn classify_index_open_error_public(err: &StateError) -> SchemaStatus {
+    classify_index_open_error(err).0
+}
 
 /// Parameters for calling tool dispatch from the HTTP transport.
 pub struct PublicToolCallParams<'a> {
@@ -776,7 +812,6 @@ pub fn handle_tool_call_public(params: PublicToolCallParams<'_>) -> JsonRpcRespo
 }
 
 mod tool_calls;
-pub use tool_calls::tool_text_response;
 
 #[cfg(test)]
 mod tests;

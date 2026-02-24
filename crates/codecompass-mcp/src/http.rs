@@ -9,6 +9,7 @@ use crate::notifications::NullProgressNotifier;
 use crate::protocol::{JsonRpcRequest, JsonRpcResponse};
 use crate::tools;
 use crate::workspace_router::WorkspaceRouter;
+use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -20,9 +21,9 @@ use codecompass_core::types::{SchemaStatus, WorkspaceConfig, generate_project_id
 use codecompass_state::tantivy_index::IndexSet;
 use serde_json::{Value, json};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::time::Instant;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tracing::{error, info};
 
 /// Shared state for the HTTP transport.
@@ -33,9 +34,13 @@ pub struct HttpState {
     pub data_dir: PathBuf,
     pub db_path: PathBuf,
     pub prewarm_status: Arc<AtomicU8>,
+    pub warmset_enabled: bool,
+    pub health_cache: Arc<Mutex<Option<(Instant, Value)>>>,
     pub server_start: Instant,
     pub router: WorkspaceRouter,
 }
+
+const HEALTH_CACHE_TTL: Duration = Duration::from_secs(1);
 
 /// Start the HTTP transport server on the given bind address and port.
 pub async fn run_http_server(
@@ -87,6 +92,8 @@ pub async fn run_http_server(
         data_dir,
         db_path,
         prewarm_status,
+        warmset_enabled: !no_prewarm,
+        health_cache: Arc::new(Mutex::new(None)),
         server_start: Instant::now(),
         router,
     });
@@ -123,10 +130,20 @@ async fn health_handler(State(state): State<Arc<HttpState>>) -> impl IntoRespons
 }
 
 /// POST / — JSON-RPC MCP handler (T225).
-async fn jsonrpc_handler(
-    State(state): State<Arc<HttpState>>,
-    Json(request): Json<JsonRpcRequest>,
-) -> impl IntoResponse {
+async fn jsonrpc_handler(State(state): State<Arc<HttpState>>, body: Bytes) -> impl IntoResponse {
+    let request: JsonRpcRequest = match serde_json::from_slice(&body) {
+        Ok(req) => req,
+        Err(e) => {
+            let body = json!({
+                "error": {
+                    "code": "invalid_input",
+                    "message": format!("Invalid JSON request body: {}", e),
+                }
+            });
+            return (StatusCode::BAD_REQUEST, Json(body)).into_response();
+        }
+    };
+
     let result = tokio::task::spawn_blocking({
         let state = Arc::clone(&state);
         move || handle_http_request(&state, &request)
@@ -144,12 +161,26 @@ async fn jsonrpc_handler(
 
 /// Build the /health response.
 fn build_health_response(state: &HttpState) -> Value {
+    if let Ok(cache) = state.health_cache.lock()
+        && let Some((cached_at, payload)) = cache.as_ref()
+        && cached_at.elapsed() < HEALTH_CACHE_TTL
+    {
+        return payload.clone();
+    }
+
+    let payload = build_health_response_uncached(state);
+    if let Ok(mut cache) = state.health_cache.lock() {
+        *cache = Some((Instant::now(), payload.clone()));
+    }
+    payload
+}
+
+fn build_health_response_uncached(state: &HttpState) -> Value {
+    let conn = codecompass_state::db::open_connection(&state.db_path).ok();
     let effective_ref = crate::server::resolve_tool_ref_public(
         None,
         &state.workspace,
-        codecompass_state::db::open_connection(&state.db_path)
-            .ok()
-            .as_ref(),
+        conn.as_ref(),
         &state.project_id,
     );
 
@@ -158,7 +189,9 @@ fn build_health_response(state: &HttpState) -> Value {
 
     // Load index and DB for health checks
     let index_set = IndexSet::open_existing(&state.data_dir).ok();
-    let conn = codecompass_state::db::open_connection(&state.db_path).ok();
+    let warmset_capacity = crate::server::warmset_capacity();
+    let warmset_members =
+        crate::server::collect_warmset_members(conn.as_ref(), &state.workspace, warmset_capacity);
 
     // Schema status
     let schema_status = match &index_set {
@@ -205,38 +238,153 @@ fn build_health_response(state: &HttpState) -> Value {
     };
     let tantivy_ok = !tantivy_checks.is_empty() && tantivy_checks.iter().all(|c| c.ok);
 
-    // Active job
-    let active_job = conn.as_ref().and_then(|c| {
-        codecompass_state::jobs::get_active_job(c, &state.project_id)
-            .ok()
-            .flatten()
-    });
+    let mut any_project_error = false;
+    let mut any_project_indexing = false;
+    let mut active_job_payload: Option<Value> = None;
+    let mut project_payloads = Vec::new();
 
-    // Per-project info
-    let (file_count, symbol_count) = conn
+    if let Some(c) = conn.as_ref() {
+        let mut projects = codecompass_state::project::list_projects(c).unwrap_or_default();
+        if projects.is_empty()
+            && let Some(p) = codecompass_state::project::get_by_id(c, &state.project_id)
+                .ok()
+                .flatten()
+        {
+            projects.push(p);
+        }
+
+        for p in projects {
+            let project_ref = if p.default_ref.trim().is_empty() {
+                constants::REF_LIVE.to_string()
+            } else {
+                p.default_ref.clone()
+            };
+
+            let project_data_dir = state.config.project_data_dir(&p.project_id);
+            let project_schema_status = match IndexSet::open_existing(&project_data_dir) {
+                Ok(_) => SchemaStatus::Compatible,
+                Err(err) => crate::server::classify_index_open_error_public(&err),
+            };
+            let (project_schema_status_str, _project_compat_message) = match project_schema_status {
+                SchemaStatus::Compatible => ("compatible", None),
+                SchemaStatus::NotIndexed => ("not_indexed", None),
+                SchemaStatus::ReindexRequired => (
+                    "reindex_required",
+                    Some("Run `codecompass index --force` to reindex."),
+                ),
+                SchemaStatus::CorruptManifest => (
+                    "corrupt_manifest",
+                    Some("Run `codecompass index --force` to rebuild."),
+                ),
+            };
+            let project_current_schema_version = match project_schema_status {
+                SchemaStatus::Compatible => constants::SCHEMA_VERSION,
+                _ => p.schema_version,
+            };
+
+            let active_job = codecompass_state::jobs::get_active_job(c, &p.project_id)
+                .ok()
+                .flatten();
+            if let Some(j) = &active_job {
+                any_project_indexing = true;
+                if active_job_payload.is_none() {
+                    active_job_payload = Some(json!({
+                        "job_id": j.job_id,
+                        "project_id": j.project_id,
+                        "mode": j.mode,
+                        "status": j.status,
+                        "ref": j.r#ref,
+                    }));
+                }
+            }
+
+            let file_count =
+                codecompass_state::manifest::file_count(c, &p.project_id, &project_ref)
+                    .unwrap_or(0);
+            let symbol_count =
+                codecompass_state::symbols::symbol_count(c, &p.project_id, &project_ref)
+                    .unwrap_or(0);
+            let last_indexed_at: Option<String> =
+                codecompass_state::jobs::get_recent_jobs(c, &p.project_id, 10)
+                    .ok()
+                    .and_then(|jobs| {
+                        jobs.into_iter()
+                            .find(|j| j.status == "published" && j.r#ref == project_ref)
+                            .map(|j| j.updated_at)
+                    });
+
+            let project_status = if !matches!(
+                project_schema_status,
+                SchemaStatus::Compatible | SchemaStatus::NotIndexed
+            ) || (p.project_id == state.project_id
+                && pw_status == crate::server::PREWARM_FAILED)
+            {
+                "error"
+            } else if p.project_id == state.project_id
+                && pw_status == crate::server::PREWARM_IN_PROGRESS
+            {
+                "warming"
+            } else if active_job.is_some() {
+                "indexing"
+            } else {
+                "ready"
+            };
+            any_project_error |= project_status == "error";
+
+            project_payloads.push(json!({
+                "project_id": p.project_id,
+                "repo_root": p.repo_root,
+                "index_status": project_status,
+                "ref": project_ref,
+                "file_count": file_count,
+                "symbol_count": symbol_count,
+                "schema_status": project_schema_status_str,
+                "current_schema_version": project_current_schema_version,
+                "required_schema_version": constants::SCHEMA_VERSION,
+                "last_indexed_at": last_indexed_at,
+            }));
+        }
+    }
+
+    if project_payloads.is_empty() {
+        project_payloads.push(json!({
+            "project_id": state.project_id,
+            "repo_root": state.workspace.to_string_lossy(),
+            "index_status": "error",
+            "ref": effective_ref,
+            "file_count": 0,
+            "symbol_count": 0,
+            "schema_status": index_compat_status,
+            "current_schema_version": current_schema_version,
+            "required_schema_version": constants::SCHEMA_VERSION,
+            "last_indexed_at": Value::Null,
+        }));
+        any_project_error = true;
+    }
+
+    let interrupted_jobs = conn
         .as_ref()
-        .map(|c| {
-            let fc = codecompass_state::manifest::file_count(c, &state.project_id, &effective_ref)
-                .unwrap_or(0);
-            let sc = codecompass_state::symbols::symbol_count(c, &state.project_id, &effective_ref)
-                .unwrap_or(0);
-            (fc, sc)
-        })
-        .unwrap_or((0, 0));
-
-    // HIGH-3: last_indexed_at from most recent published job
-    let last_indexed_at: Option<String> = conn.as_ref().and_then(|c| {
-        codecompass_state::jobs::get_recent_jobs(c, &state.project_id, 10)
-            .ok()
-            .and_then(|jobs| {
-                jobs.into_iter()
-                    .find(|j| j.status == "published" && j.r#ref == effective_ref)
-                    .map(|j| j.updated_at)
-            })
-    });
+        .and_then(|c| codecompass_state::jobs::get_interrupted_jobs(c).ok())
+        .unwrap_or_default();
+    let interrupted_recovery_report = if interrupted_jobs.is_empty() {
+        None
+    } else {
+        let last_interrupted_at = interrupted_jobs
+            .iter()
+            .map(|j| j.updated_at.as_str())
+            .max()
+            .unwrap_or_default();
+        Some(json!({
+            "detected": true,
+            "interrupted_jobs": interrupted_jobs.len(),
+            "last_interrupted_at": last_interrupted_at,
+            "recommended_action": "run sync_repo or index_repo for the affected workspace",
+        }))
+    };
 
     // Overall status — priority: error > warming > indexing > ready (per spec)
-    let overall_status = if pw_status == crate::server::PREWARM_FAILED
+    let overall_status = if any_project_error
+        || pw_status == crate::server::PREWARM_FAILED
         || !matches!(
             schema_status,
             SchemaStatus::Compatible | SchemaStatus::NotIndexed
@@ -244,7 +392,7 @@ fn build_health_response(state: &HttpState) -> Value {
         "error"
     } else if pw_status == crate::server::PREWARM_IN_PROGRESS {
         "warming"
-    } else if active_job.is_some() {
+    } else if any_project_indexing {
         "indexing"
     } else {
         "ready"
@@ -260,13 +408,8 @@ fn build_health_response(state: &HttpState) -> Value {
         "sqlite_ok": sqlite_ok,
         "sqlite_error": sqlite_error,
         "prewarm_status": pw_label,
-        "active_job": active_job.map(|j| json!({
-            "job_id": j.job_id,
-            "project_id": j.project_id,
-            "mode": j.mode,
-            "status": j.status,
-            "ref": j.r#ref,
-        })),
+        "active_job": active_job_payload,
+        "interrupted_recovery_report": interrupted_recovery_report,
         "startup_checks": {
             "index": {
                 "status": index_compat_status,
@@ -275,18 +418,12 @@ fn build_health_response(state: &HttpState) -> Value {
                 "message": compat_message,
             }
         },
-        "projects": [{
-            "project_id": state.project_id,
-            "repo_root": state.workspace.to_string_lossy(),
-            "index_status": overall_status,
-            "ref": effective_ref,
-            "file_count": file_count,
-            "symbol_count": symbol_count,
-            "schema_status": index_compat_status,
-            "current_schema_version": current_schema_version,
-            "required_schema_version": constants::SCHEMA_VERSION,
-            "last_indexed_at": last_indexed_at,
-        }],
+        "projects": project_payloads,
+        "workspace_warmset": {
+            "enabled": state.warmset_enabled,
+            "capacity": warmset_capacity,
+            "members": if state.warmset_enabled { warmset_members } else { Vec::<String>::new() },
+        },
     })
 }
 
@@ -333,11 +470,13 @@ fn handle_http_request(state: &HttpState, request: &JsonRpcRequest) -> JsonRpcRe
                     let eff_data_dir = state.config.project_data_dir(&resolved.project_id);
 
                     if resolved.on_demand_indexing {
-                        if let Err(e) = crate::server::bootstrap_and_index(
-                            &resolved.workspace_path,
-                            &resolved.project_id,
-                            &eff_data_dir,
-                        ) {
+                        if resolved.should_bootstrap
+                            && let Err(e) = crate::server::bootstrap_and_index(
+                                &resolved.workspace_path,
+                                &resolved.project_id,
+                                &eff_data_dir,
+                            )
+                        {
                             error!(
                                 workspace = %resolved.workspace_path.display(),
                                 "on-demand bootstrap failed: {}", e
@@ -358,7 +497,7 @@ fn handle_http_request(state: &HttpState, request: &JsonRpcRequest) -> JsonRpcRe
                                 "suggested_next_actions": ["poll index_status", "retry after indexing completes"],
                                 "metadata": metadata,
                             });
-                            return crate::server::tool_text_response(
+                            return crate::server::tool_text_response_public(
                                 request.id.clone(),
                                 payload,
                             );
@@ -449,6 +588,8 @@ mod tests {
             data_dir,
             db_path,
             prewarm_status: Arc::new(AtomicU8::new(crate::server::PREWARM_COMPLETE)),
+            warmset_enabled: true,
+            health_cache: Arc::new(Mutex::new(None)),
             server_start: Instant::now(),
             router,
         };
@@ -459,6 +600,8 @@ mod tests {
         assert!(health.get("uptime_seconds").is_some());
         assert!(health.get("projects").is_some());
         assert!(health.get("startup_checks").is_some());
+        assert!(health.get("workspace_warmset").is_some());
+        assert!(health.get("interrupted_recovery_report").is_some());
 
         // Check per-project compatibility fields
         let projects = health["projects"].as_array().unwrap();
@@ -492,6 +635,8 @@ mod tests {
             data_dir,
             db_path,
             prewarm_status: Arc::new(AtomicU8::new(crate::server::PREWARM_COMPLETE)),
+            warmset_enabled: true,
+            health_cache: Arc::new(Mutex::new(None)),
             server_start: Instant::now(),
             router,
         };
@@ -507,5 +652,48 @@ mod tests {
         let result = response.result.unwrap();
         let tool_array = result["tools"].as_array().unwrap();
         assert!(!tool_array.is_empty());
+    }
+
+    #[tokio::test]
+    async fn jsonrpc_tools_list_without_content_type_header() {
+        use axum::body::{Bytes, to_bytes};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path();
+        let config = Config::default();
+        let project_id = generate_project_id(&workspace.to_string_lossy());
+        let data_dir = config.project_data_dir(&project_id);
+        let db_path = data_dir.join(constants::STATE_DB_FILE);
+
+        let router = WorkspaceRouter::new(
+            WorkspaceConfig::default(),
+            workspace.to_path_buf(),
+            db_path.clone(),
+        )
+        .unwrap();
+
+        let state = Arc::new(HttpState {
+            config,
+            workspace: workspace.to_path_buf(),
+            project_id,
+            data_dir,
+            db_path,
+            prewarm_status: Arc::new(AtomicU8::new(crate::server::PREWARM_COMPLETE)),
+            warmset_enabled: true,
+            health_cache: Arc::new(Mutex::new(None)),
+            server_start: Instant::now(),
+            router,
+        });
+
+        let response = jsonrpc_handler(
+            State(state),
+            Bytes::from(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert!(parsed.get("result").is_some());
     }
 }

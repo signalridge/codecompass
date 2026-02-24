@@ -1508,7 +1508,7 @@ Response:
     {
       "project_id": "backend",
       "repo_root": "/Users/dev/backend",
-      "index_status": "ready",    // "ready" | "indexing" | "stale" | "error"
+      "index_status": "ready",    // "ready" | "warming" | "indexing" | "error"
       "last_indexed_at": "2026-02-22T10:30:00Z",
       "ref": "main",
       "file_count": 3891

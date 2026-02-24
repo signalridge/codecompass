@@ -993,15 +993,16 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
             let interrupted_recovery_report = if interrupted_jobs.is_empty() {
                 None
             } else {
+                let last_interrupted_at = interrupted_jobs
+                    .iter()
+                    .map(|j| j.updated_at.as_str())
+                    .max()
+                    .unwrap_or_default();
                 Some(json!({
-                    "count": interrupted_jobs.len(),
-                    "jobs": interrupted_jobs.iter().map(|j| json!({
-                        "job_id": j.job_id,
-                        "ref": j.r#ref,
-                        "mode": j.mode,
-                        "created_at": j.created_at,
-                    })).collect::<Vec<_>>(),
-                    "message": "These jobs were running when the server last shut down. They were marked as interrupted and may need to be retried.",
+                    "detected": true,
+                    "interrupted_jobs": interrupted_jobs.len(),
+                    "last_interrupted_at": last_interrupted_at,
+                    "recommended_action": "run sync_repo or index_repo for the affected workspace",
                 }))
             };
 
@@ -1148,11 +1149,15 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
                         .project_data_dir(project_id)
                         .join(constants::STATE_DB_FILE);
                     let poll_project_id = project_id.to_string();
+                    let notification_start = std::time::Instant::now();
                     std::thread::spawn(move || {
                         let mut child = child;
                         let mut last_scanned = 0i64;
                         let mut last_indexed = 0i64;
                         let mut last_symbols = 0i64;
+                        let mut poll_conn =
+                            codecompass_state::db::open_connection(&poll_db_path).ok();
+                        let mut sleep_ms = 1000u64;
 
                         loop {
                             match child.try_wait() {
@@ -1161,12 +1166,14 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
                                     if let Some(ref token) = poll_token {
                                         let summary = if status.success() {
                                             format!(
-                                                "Indexed {} files, {} symbols",
-                                                last_indexed, last_symbols,
+                                                "Indexed {} files, {} symbols in {:.1}s",
+                                                last_indexed,
+                                                last_symbols,
+                                                notification_start.elapsed().as_secs_f64(),
                                             )
                                         } else {
                                             format!(
-                                                "Indexer exited with code {}",
+                                                "Error: Indexer exited with code {}",
                                                 status.code().unwrap_or(-1)
                                             )
                                         };
@@ -1181,39 +1188,99 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
                                 }
                                 Ok(None) => {
                                     // Still running — poll progress from SQLite
-                                    if let Some(ref token) = poll_token
-                                        && let Ok(conn) =
+                                    if poll_conn.is_none() {
+                                        poll_conn =
                                             codecompass_state::db::open_connection(&poll_db_path)
-                                        && let Ok(Some(job)) =
-                                            codecompass_state::jobs::get_active_job(
-                                                &conn,
-                                                &poll_project_id,
-                                            )
-                                        && (job.files_scanned != last_scanned
-                                            || job.files_indexed != last_indexed
-                                            || job.symbols_extracted != last_symbols)
+                                                .ok();
+                                    }
+
+                                    let mut progress_changed = false;
+                                    if let Some(ref token) = poll_token
+                                        && let Some(conn) = poll_conn.as_ref()
                                     {
-                                        last_scanned = job.files_scanned;
-                                        last_indexed = job.files_indexed;
-                                        last_symbols = job.symbols_extracted;
-                                        let total = last_scanned.max(1);
-                                        let pct = ((last_indexed as f64 / total as f64) * 100.0)
-                                            .min(99.0)
-                                            as u32;
-                                        let msg = format!(
-                                            "Scanned {} files, indexed {}, {} symbols",
-                                            last_scanned, last_indexed, last_symbols,
-                                        );
-                                        notifier_clone.emit_progress(
+                                        match codecompass_state::jobs::get_active_job(
+                                            conn,
+                                            &poll_project_id,
+                                        ) {
+                                            Ok(Some(job))
+                                                if job.files_scanned != last_scanned
+                                                    || job.files_indexed != last_indexed
+                                                    || job.symbols_extracted != last_symbols =>
+                                            {
+                                                last_scanned = job.files_scanned;
+                                                last_indexed = job.files_indexed;
+                                                last_symbols = job.symbols_extracted;
+                                                progress_changed = true;
+
+                                                let total = last_scanned.max(1);
+                                                let pct = ((last_indexed as f64 / total as f64)
+                                                    * 100.0)
+                                                    .min(99.0)
+                                                    as u32;
+                                                let (msg, stage_pct) = if last_scanned == 0 {
+                                                    ("Scanning files: 0 discovered".to_string(), 0)
+                                                } else if last_indexed == 0 {
+                                                    (
+                                                        format!(
+                                                            "Scanning files: {} discovered",
+                                                            last_scanned
+                                                        ),
+                                                        10,
+                                                    )
+                                                } else if pct < 70 {
+                                                    (
+                                                        format!(
+                                                            "Parsing files: {}/{} ({}%)",
+                                                            last_indexed, last_scanned, pct
+                                                        ),
+                                                        pct.max(10),
+                                                    )
+                                                } else if pct < 95 {
+                                                    (
+                                                        format!(
+                                                            "Indexing: {}/{} files, {} symbols",
+                                                            last_indexed,
+                                                            last_scanned,
+                                                            last_symbols
+                                                        ),
+                                                        pct,
+                                                    )
+                                                } else {
+                                                    ("Finalizing index...".to_string(), pct.max(95))
+                                                };
+                                                notifier_clone.emit_progress(
+                                                    token,
+                                                    "Indexing",
+                                                    &msg,
+                                                    Some(stage_pct.min(99)),
+                                                );
+                                            }
+                                            Ok(_) => {}
+                                            Err(_) => {
+                                                poll_conn = None;
+                                            }
+                                        }
+                                    }
+                                    sleep_ms = if progress_changed {
+                                        500
+                                    } else {
+                                        (sleep_ms + 250).min(2000)
+                                    };
+                                    std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
+                                }
+                                Err(err) => {
+                                    if let Some(ref token) = poll_token {
+                                        notifier_clone.emit_end(
                                             token,
-                                            "Indexing",
-                                            &msg,
-                                            Some(pct),
+                                            "Indexing failed",
+                                            &format!(
+                                                "Error: Failed to poll indexer process: {}",
+                                                err
+                                            ),
                                         );
                                     }
-                                    std::thread::sleep(std::time::Duration::from_secs(1));
+                                    break;
                                 }
-                                Err(_) => break,
                             }
                         }
                     });
@@ -1304,6 +1371,10 @@ fn handle_health_check(params: &ToolCallParams<'_>) -> JsonRpcResponse {
     // Current prewarm status
     let pw_status = prewarm_status.load(Ordering::Acquire);
     let pw_label = prewarm_status_label(pw_status);
+    let warmset_capacity = crate::server::warmset_capacity();
+    let warmset_members =
+        crate::server::collect_warmset_members(*conn, workspace, warmset_capacity);
+    let warmset_enabled = pw_status != PREWARM_SKIPPED;
 
     // Tantivy health
     let tantivy_checks = if let Some(idx) = index_set {
@@ -1356,6 +1427,16 @@ fn handle_health_check(params: &ToolCallParams<'_>) -> JsonRpcResponse {
             };
             let project_schema_status =
                 resolve_project_schema_status(config, project_id, &p.project_id, *schema_status);
+            let project_schema_status_str = match project_schema_status {
+                SchemaStatus::Compatible => "compatible",
+                SchemaStatus::NotIndexed => "not_indexed",
+                SchemaStatus::ReindexRequired => "reindex_required",
+                SchemaStatus::CorruptManifest => "corrupt_manifest",
+            };
+            let project_current_schema_version = match project_schema_status {
+                SchemaStatus::Compatible => constants::SCHEMA_VERSION,
+                _ => p.schema_version,
+            };
             let freshness_result = check_freshness_with_scan_params(
                 Some(c),
                 project_workspace,
@@ -1384,14 +1465,15 @@ fn handle_health_check(params: &ToolCallParams<'_>) -> JsonRpcResponse {
                 }
             }
 
-            let (index_status, warming) = if active_job.is_some() {
-                ("indexing", false)
-            } else if !matches!(project_schema_status, SchemaStatus::Compatible) {
+            let has_schema_error = !matches!(project_schema_status, SchemaStatus::Compatible);
+            let prewarm_failed_for_project =
+                p.project_id == *project_id && pw_status == PREWARM_FAILED;
+            let (index_status, warming) = if has_schema_error || prewarm_failed_for_project {
                 ("error", false)
             } else if p.project_id == *project_id && pw_status == PREWARM_IN_PROGRESS {
                 ("warming", true)
-            } else if p.project_id == *project_id && pw_status == PREWARM_FAILED {
-                ("error", false)
+            } else if active_job.is_some() {
+                ("indexing", false)
             } else {
                 ("ready", false)
             };
@@ -1421,6 +1503,9 @@ fn handle_health_check(params: &ToolCallParams<'_>) -> JsonRpcResponse {
                 "ref": project_ref,
                 "file_count": file_count,
                 "symbol_count": symbol_count,
+                "schema_status": project_schema_status_str,
+                "current_schema_version": project_current_schema_version,
+                "required_schema_version": constants::SCHEMA_VERSION,
             }));
         }
 
@@ -1442,6 +1527,20 @@ fn handle_health_check(params: &ToolCallParams<'_>) -> JsonRpcResponse {
             } else {
                 "ready"
             };
+            let fallback_schema_status = match schema_status {
+                SchemaStatus::Compatible => "compatible",
+                SchemaStatus::NotIndexed => "not_indexed",
+                SchemaStatus::ReindexRequired => "reindex_required",
+                SchemaStatus::CorruptManifest => "corrupt_manifest",
+            };
+            let fallback_current_schema_version = match schema_status {
+                SchemaStatus::Compatible => constants::SCHEMA_VERSION,
+                _ => codecompass_state::project::get_by_id(c, project_id)
+                    .ok()
+                    .flatten()
+                    .map(|p| p.schema_version)
+                    .unwrap_or(0),
+            };
             project_payloads.push(json!({
                 "project_id": project_id,
                 "repo_root": workspace.to_string_lossy(),
@@ -1451,9 +1550,23 @@ fn handle_health_check(params: &ToolCallParams<'_>) -> JsonRpcResponse {
                 "ref": effective_ref,
                 "file_count": codecompass_state::manifest::file_count(c, project_id, &effective_ref).unwrap_or(0),
                 "symbol_count": codecompass_state::symbols::symbol_count(c, project_id, &effective_ref).unwrap_or(0),
+                "schema_status": fallback_schema_status,
+                "current_schema_version": fallback_current_schema_version,
+                "required_schema_version": constants::SCHEMA_VERSION,
             }));
         }
     } else {
+        let fallback_schema_status = match schema_status {
+            SchemaStatus::Compatible => "compatible",
+            SchemaStatus::NotIndexed => "not_indexed",
+            SchemaStatus::ReindexRequired => "reindex_required",
+            SchemaStatus::CorruptManifest => "corrupt_manifest",
+        };
+        let fallback_current_schema_version = if matches!(schema_status, SchemaStatus::Compatible) {
+            constants::SCHEMA_VERSION
+        } else {
+            0
+        };
         project_payloads.push(json!({
             "project_id": project_id,
             "repo_root": workspace.to_string_lossy(),
@@ -1463,6 +1576,9 @@ fn handle_health_check(params: &ToolCallParams<'_>) -> JsonRpcResponse {
             "ref": effective_ref,
             "file_count": 0,
             "symbol_count": 0,
+            "schema_status": fallback_schema_status,
+            "current_schema_version": fallback_current_schema_version,
+            "required_schema_version": constants::SCHEMA_VERSION,
         }));
         any_error_project = true;
     }
@@ -1511,15 +1627,16 @@ fn handle_health_check(params: &ToolCallParams<'_>) -> JsonRpcResponse {
     let interrupted_recovery_report = if interrupted_jobs.is_empty() {
         None
     } else {
+        let last_interrupted_at = interrupted_jobs
+            .iter()
+            .map(|j| j.updated_at.as_str())
+            .max()
+            .unwrap_or_default();
         Some(json!({
-            "count": interrupted_jobs.len(),
-            "jobs": interrupted_jobs.iter().map(|j| json!({
-                "job_id": j.job_id,
-                "ref": j.r#ref,
-                "mode": j.mode,
-                "created_at": j.created_at,
-            })).collect::<Vec<_>>(),
-            "message": "These jobs were running when the server last shut down. They were marked as interrupted and may need to be retried.",
+            "detected": true,
+            "interrupted_jobs": interrupted_jobs.len(),
+            "last_interrupted_at": last_interrupted_at,
+            "recommended_action": "run sync_repo or index_repo for the affected workspace",
         }))
     };
 
@@ -1544,6 +1661,11 @@ fn handle_health_check(params: &ToolCallParams<'_>) -> JsonRpcResponse {
                 "required_schema_version": constants::SCHEMA_VERSION,
                 "message": compat_message,
             }
+        },
+        "workspace_warmset": {
+            "enabled": warmset_enabled,
+            "capacity": warmset_capacity,
+            "members": if warmset_enabled { warmset_members } else { Vec::<String>::new() },
         },
         "projects": project_payloads,
         "metadata": metadata,

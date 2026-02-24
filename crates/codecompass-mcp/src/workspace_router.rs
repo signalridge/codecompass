@@ -7,7 +7,10 @@ use std::path::{Path, PathBuf};
 pub struct ResolvedWorkspace {
     pub workspace_path: PathBuf,
     pub project_id: String,
+    /// Whether query/status tools should surface "indexing" partial semantics.
     pub on_demand_indexing: bool,
+    /// Whether this request should launch bootstrap indexing.
+    pub should_bootstrap: bool,
 }
 
 /// Router that resolves workspace parameters to project contexts.
@@ -74,6 +77,7 @@ impl WorkspaceRouter {
                     workspace_path: self.default_workspace.clone(),
                     project_id: self.default_project_id.clone(),
                     on_demand_indexing: false,
+                    should_bootstrap: false,
                 });
             }
         };
@@ -92,6 +96,7 @@ impl WorkspaceRouter {
                 workspace_path: self.default_workspace.clone(),
                 project_id: self.default_project_id.clone(),
                 on_demand_indexing: false,
+                should_bootstrap: false,
             });
         }
 
@@ -112,6 +117,7 @@ impl WorkspaceRouter {
             })?
         {
             // Case 2: Known workspace
+            let on_demand_indexing = ws.project_id.is_none() && ws.index_status == "indexing";
             let project_id = ws
                 .project_id
                 .unwrap_or_else(|| generate_project_id(&canonical_str));
@@ -123,7 +129,8 @@ impl WorkspaceRouter {
             return Ok(ResolvedWorkspace {
                 workspace_path: canonical,
                 project_id,
-                on_demand_indexing: false,
+                on_demand_indexing,
+                should_bootstrap: false,
             });
         }
 
@@ -204,16 +211,25 @@ impl WorkspaceRouter {
             reason: format!("failed to register workspace: {e}"),
         })?;
 
-        // HIGH-6: After UPSERT, re-read to detect if another concurrent request
-        // already bootstrapped this workspace (has project_id set).
+        // HIGH-6: Claim bootstrap launch in DB so concurrent requests do not
+        // spawn duplicate indexers for the same workspace.
+        let should_bootstrap =
+            codecompass_state::workspace::claim_bootstrap_indexing(&conn, &canonical_str, &now)
+                .map_err(|e| WorkspaceError::NotAllowed {
+                    path: canonical_str.clone(),
+                    reason: format!("failed to claim workspace bootstrap: {e}"),
+                })?;
+
+        // If another request already bootstrapped this workspace, still return
+        // indexing semantics for query tools (partial + retry guidance).
         if let Ok(Some(ws)) = codecompass_state::workspace::get_workspace(&conn, &canonical_str)
             && ws.project_id.is_some()
         {
-            // Another request already registered and bootstrapped — reuse it
             return Ok(ResolvedWorkspace {
                 workspace_path: canonical,
                 project_id: ws.project_id.unwrap(),
-                on_demand_indexing: false, // Already being indexed
+                on_demand_indexing: !should_bootstrap,
+                should_bootstrap: false,
             });
         }
 
@@ -222,6 +238,7 @@ impl WorkspaceRouter {
             workspace_path: canonical,
             project_id,
             on_demand_indexing: true,
+            should_bootstrap,
         })
     }
 
@@ -504,9 +521,10 @@ mod tests {
         assert_eq!(resolved.project_id, expected_id);
     }
 
-    // Second resolve of same auto-discovered workspace returns known (not on-demand again)
+    // Second resolve of same auto-discovered workspace reuses in-progress indexing
+    // without launching bootstrap again.
     #[test]
-    fn second_resolve_of_auto_discovered_is_not_on_demand() {
+    fn second_resolve_of_auto_discovered_reuses_indexing_without_bootstrap() {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("data/state.db");
         setup_db(&db_path);
@@ -527,10 +545,12 @@ mod tests {
         // First resolve: on-demand
         let r1 = router.resolve_workspace(Some(&ws_str)).unwrap();
         assert!(r1.on_demand_indexing);
+        assert!(r1.should_bootstrap);
 
-        // Second resolve: already known
+        // Second resolve: reuse in-progress indexing semantics
         let r2 = router.resolve_workspace(Some(&ws_str)).unwrap();
-        assert!(!r2.on_demand_indexing);
+        assert!(r2.on_demand_indexing);
+        assert!(!r2.should_bootstrap);
         assert_eq!(r1.project_id, r2.project_id);
     }
 
