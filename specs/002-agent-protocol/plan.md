@@ -85,7 +85,7 @@ crates/
             └── serve_mcp.rs  # Add --no-prewarm flag
 
 configs/
-└── default.toml              # Add freshness_policy default, debug flag
+└── default.toml              # Add freshness policy and ranking explainability defaults
 ```
 
 **Structure Decision**: No new crates. All changes fit within existing crate
@@ -101,6 +101,6 @@ architecture.
 |----------|-----------|
 | `detail_level` + `compact` as serialization filters | Keeps query/ranking logic unchanged; serialization-only reduces risk |
 | `get_file_outline` as pure SQLite query | Avoids Tantivy involvement; leverages existing `symbol_relations` table |
-| Prewarm as blocking-then-ready | Ensures first query gets warm performance; `--no-prewarm` for opt-out |
+| Prewarm as async-after-handshake | Preserves MCP readiness while warming indices in background; `--no-prewarm` for opt-out |
 | Freshness policy as enum | Three clear levels avoid ambiguous intermediate states |
 | `ranking_reasons` gated by `ranking_explain_level` | `off` keeps zero-overhead default, `basic`/`full` enable explainability as needed |

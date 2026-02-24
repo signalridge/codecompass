@@ -288,6 +288,12 @@ Return project-level operational status for all registered projects.
     "missing": []
   },
   "active_job": null,
+  "interrupted_recovery_report": null,
+  "workspace_warmset": {
+    "enabled": true,
+    "capacity": 3,
+    "members": ["/path/to/repo"]
+  },
   "prewarm_status": "complete",
   "startup_checks": {
     "index": {
@@ -350,6 +356,14 @@ If `startup_checks.index.status` is:
 }
 ```
 
+### Recovery/Warmset Extensions
+
+`004-workspace-transport` extends health surfaces with:
+
+- `interrupted_recovery_report`: present when startup reconciliation finds
+  interrupted jobs (otherwise null/omitted).
+- `workspace_warmset`: bounded recent-workspace set chosen for startup prewarm.
+
 ### Errors
 
 | Code | Meaning |
@@ -371,7 +385,6 @@ Config file additions (`config.toml`):
 # Default freshness policy: "strict", "balanced", "best_effort"
 freshness_policy = "balanced"
 
-[debug]
-# Enable ranking reasons in search responses
-ranking_reasons = false
+# Ranking explainability payload level: "off", "basic", "full"
+ranking_explain_level = "off"
 ```

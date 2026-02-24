@@ -150,11 +150,11 @@ target (< 2000ms).
 
 ---
 
-### User Story 5 - Developer Debugs Ranking with Explanations (Priority: P3)
+### User Story 5 - Developer Inspects Ranking Explanations (Priority: P3)
 
-A developer or agent troubleshooting search quality enables debug mode (via
-`--verbose` CLI flag or `debug: true` in config). Search responses now include
-a `ranking_reasons` field in metadata that shows per-result scoring breakdown:
+A developer or agent troubleshooting search quality sets
+`ranking_explain_level` to `basic` or `full`. Search responses include a
+`ranking_reasons` field in metadata that shows per-result scoring breakdown:
 exact match boost, qualified name boost, path affinity, definition boost,
 kind match, and BM25 score.
 
@@ -162,16 +162,16 @@ kind match, and BM25 score.
 that ranking decisions are transparent. This is the Phase 1.1 MUST for
 explainability.
 
-**Independent Test**: Enable debug mode, run a search, verify each result
+**Independent Test**: Set `ranking_explain_level: "full"`, run a search, verify each result
 includes a `ranking_reasons` object with the expected scoring factors.
 
 **Acceptance Scenarios**:
 
-1. **Given** debug mode is enabled, **When** `search_code` is called, **Then**
+1. **Given** `ranking_explain_level: "full"`, **When** `search_code` is called, **Then**
    each result includes `ranking_reasons` with fields: `exact_match_boost`,
    `qualified_name_boost`, `path_affinity`, `definition_boost`, `kind_match`,
    `bm25_score`.
-2. **Given** debug mode is disabled (default), **When** `search_code` is
+2. **Given** `ranking_explain_level: "off"` (default), **When** `search_code` is
    called, **Then** the `ranking_reasons` field is absent from the response.
 3. **Given** a search where one result is an exact symbol match, **When**
    ranking reasons are inspected, **Then** `exact_match_boost` is nonzero
@@ -283,8 +283,7 @@ freshness policy level and verify the expected behavior.
 - **FR-113**: Health status MUST report `"warming"` during prewarm, then
   transition to `"ready"` on completion.
 - **FR-114**: System MUST include an optional `ranking_reasons` field in search
-  response metadata when debug mode is enabled (`--verbose` or `debug: true`
-  in config).
+  response metadata when `ranking_explain_level` is not `off`.
 - **FR-115**: `ranking_reasons` MUST contain per-result breakdown with fields:
   `exact_match_boost`, `qualified_name_boost`, `path_affinity`,
   `definition_boost`, `kind_match`, `bm25_score`.

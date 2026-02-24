@@ -200,6 +200,13 @@ Response (during active indexing):
 | `active_job.estimated_completion_pct` | int | Estimated completion (0-100). |
 | `interrupted_recovery_report` | object | Present when startup reconciliation found interrupted jobs; omitted otherwise. |
 
+### `health_check` Extension (v0.3.0)
+
+`health_check` keeps its schema from `002-agent-protocol` and adds:
+
+- `interrupted_recovery_report` (same shape as `index_status`)
+- optional `workspace_warmset` status block for startup prewarm visibility
+
 ---
 
 ## Tool: `index_repo` (Updated)
