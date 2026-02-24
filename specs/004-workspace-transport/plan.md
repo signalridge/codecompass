@@ -7,7 +7,7 @@
 
 ## Summary
 
-Add multi-workspace auto-discovery (with security-constrained opt-in), index
+Add multi-workspace auto-workspace discovery (with security-constrained opt-in), index
 progress notifications via MCP protocol, restart-safe interrupted-job reporting,
 workspace warmset prewarming, and HTTP transport mode to the existing
 CodeCompass MCP server. This extends the single-workspace stdio server from
@@ -21,7 +21,7 @@ development environments.
 **Modified Crates**: `codecompass-mcp`, `codecompass-cli`, `codecompass-state`, `codecompass-core`
 **Storage Changes**: `index_jobs.progress_token` column addition; `known_workspaces` table activation
 **Testing**: cargo test + fixture repos with multi-workspace scenarios
-**Constraints**: No authentication in HTTP v1 (local-only), `--auto-workspace` off by default
+**Constraints**: No authentication in HTTP v1 (explicit non-goal for this phase; local-only), `--auto-workspace` off by default
 **Performance Goals**: `/health` p95 < 50ms, workspace routing overhead < 5ms per request, `index_status` polling p95 < 50ms
 
 ## Constitution Check

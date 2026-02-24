@@ -292,7 +292,7 @@ Readiness probe for load balancers, monitoring, and agent pre-flight checks.
 | `projects` | array | Per-project status entries. |
 | `projects[].project_id` | string | Internal project identifier. |
 | `projects[].repo_root` | string | Absolute path to project root. |
-| `projects[].index_status` | string | `ready`, `indexing`, `stale`, `error`. |
+| `projects[].index_status` | string | `ready`, `warming`, `indexing`, `error`. |
 | `projects[].schema_status` | string | `compatible`, `not_indexed`, `reindex_required`, `corrupt_manifest`. |
 | `projects[].current_schema_version` | int | Schema version found in local index metadata. |
 | `projects[].required_schema_version` | int | Schema version required by running binary. |
@@ -391,7 +391,7 @@ Minimum mapping requirements:
 | Condition | `error.code` |
 |-----------|--------------|
 | Malformed JSON / invalid JSON-RPC payload | `invalid_input` |
-| Unknown workspace with auto-discovery disabled | `workspace_not_registered` |
+| Unknown workspace with auto-workspace disabled | `workspace_not_registered` |
 | Workspace outside allowlist | `workspace_not_allowed` |
 | Schema mismatch / corrupt manifest during tool call | `index_incompatible` |
 
@@ -408,7 +408,7 @@ Options:
   --bind <ADDR>                Bind address [default: 127.0.0.1] (only with --transport http)
   --workspace <PATH>           Pre-register workspace (repeatable)
   --auto-workspace             Enable on-demand workspace discovery (opt-in)
-  --allowed-root <PATH>        Allowed root prefix for auto-discovery (repeatable, required with --auto-workspace)
+  --allowed-root <PATH>        Allowed root prefix for auto-workspace (repeatable, required with --auto-workspace)
   --no-prewarm                 Skip Tantivy index prewarming on startup
   -v, --verbose                Increase log verbosity
   --config <PATH>              Custom config file path
