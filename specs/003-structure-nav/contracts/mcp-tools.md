@@ -14,8 +14,8 @@ Included in every tool response:
   "metadata": {
     "codecompass_protocol_version": "1.0",
     "freshness_status": "fresh | stale | syncing",
-    "indexing_status": "idle | indexing | partial_available",
-    "result_completeness": "complete | partial",
+    "indexing_status": "not_indexed | indexing | ready | failed",
+    "result_completeness": "complete | partial | truncated",
     "ref": "main",
     "schema_status": "compatible | not_indexed | reindex_required | corrupt_manifest"
   }
@@ -325,7 +325,7 @@ enabling agents to manage their context window explicitly.
     "strategy": "breadth",
     "codecompass_protocol_version": "1.0",
     "freshness_status": "fresh",
-    "indexing_status": "idle",
+    "indexing_status": "ready",
     "result_completeness": "complete",
     "ref": "main"
   }
@@ -360,7 +360,7 @@ enabling agents to manage their context window explicitly.
     "strategy": "depth",
     "codecompass_protocol_version": "1.0",
     "freshness_status": "fresh",
-    "indexing_status": "idle",
+    "indexing_status": "ready",
     "result_completeness": "complete",
     "ref": "main"
   }
@@ -384,7 +384,7 @@ When the token budget is reached before all candidates are included:
     "suggestion": "Use locate_symbol for specific symbols, or increase max_tokens",
     "codecompass_protocol_version": "1.0",
     "freshness_status": "fresh",
-    "indexing_status": "idle",
+    "indexing_status": "ready",
     "result_completeness": "partial",
     "ref": "main"
   }

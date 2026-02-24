@@ -210,7 +210,9 @@ the response does not exceed 500.
   `metadata` fields in every response.
 - **FR-211**: All new MCP tools MUST include Protocol v1 metadata in responses
   (`codecompass_protocol_version`, `freshness_status`, `indexing_status`,
-  `result_completeness`, `ref`).
+  `result_completeness`, `ref`) and use canonical enums:
+  `indexing_status` = `not_indexed | indexing | ready | failed`,
+  `result_completeness` = `complete | partial | truncated`.
 - **FR-212**: All new MCP tools MUST accept an optional `ref` parameter for
   ref-scoped queries, defaulting to current HEAD or `"live"`.
 - **FR-213**: `get_code_context` default `max_tokens` MUST be 4000 when the

@@ -35,12 +35,12 @@
 
 ### Implementation for User Story 1
 
-- [X] T088 [US1] Implement `serialize_result_at_level(result, detail_level)` function in `crates/codecompass-query/src/detail.rs` that filters result fields based on `DetailLevel` enum: `Location` emits only path/line_start/line_end/kind/name; `Signature` adds qualified_name/signature/language/visibility; `Context` adds body_preview/parent/related_symbols
+- [X] T088 [US1] Implement `serialize_result_at_level(result, detail_level, compact)` function in `crates/codecompass-query/src/detail.rs` that filters result fields based on `DetailLevel` enum and optional compact mode: `Location` emits only path/line_start/line_end/kind/name; `Signature` adds qualified_name/signature/language/visibility; `Context` adds body_preview/parent/related_symbols unless `compact=true`
 - [X] T089 [US1] Add `body_preview` generation logic in `crates/codecompass-query/src/detail.rs`: read first N lines of symbol body from Tantivy `content` field, truncate to configurable limit (default 10 lines)
 - [X] T090 [US1] Add `parent` context resolution in `crates/codecompass-query/src/detail.rs`: look up `parent_symbol_id` in SQLite `symbol_relations` to get parent kind/name/path/line
 - [X] T091 [US1] Add `related_symbols` resolution in `crates/codecompass-query/src/detail.rs`: query `symbol_relations` for symbols in the same file referenced by imports or same parent, limit to 5
-- [X] T092 [US1] Wire `detail_level` parameter into `search_code` MCP tool handler in `crates/codecompass-mcp/src/server.rs`: parse from input, pass to serialization
-- [X] T093 [US1] Wire `detail_level` parameter into `locate_symbol` MCP tool handler in `crates/codecompass-mcp/src/server.rs`: parse from input, pass to serialization
+- [X] T092 [US1] Wire `detail_level` and `compact` parameters into `search_code` MCP tool handler in `crates/codecompass-mcp/src/server.rs`: parse from input, pass to serialization
+- [X] T093 [US1] Wire `detail_level` and `compact` parameters into `locate_symbol` MCP tool handler in `crates/codecompass-mcp/src/server.rs`: parse from input, pass to serialization
 - [X] T094 [US1] Update Protocol v1 response types: added `DetailLevel` to tool input schemas, updated result serialization with conditional field inclusion via detail level filtering
 - [X] T095 [US1] Write integration test: call `locate_symbol` with `detail_level: "location"`, verify response contains location fields plus identity fields and no signature/context fields
 - [X] T096 [P] [US1] Write integration test: call `locate_symbol` with `detail_level: "signature"` (default), verify response contains signature-level fields plus identity fields
@@ -119,6 +119,9 @@
 - [X] T121 [US5] Update Protocol v1 metadata type in `crates/codecompass-mcp/src/protocol.rs`: add optional `ranking_reasons: Option<Vec<RankingReasons>>` field with `skip_serializing_if = "Option::is_none"`
 - [X] T122 [US5] Write integration test: enable debug mode, call `search_code`, verify each result has `ranking_reasons` with all 7 fields populated
 - [X] T123 [P] [US5] Write integration test: disable debug mode (default), call `search_code`, verify `ranking_reasons` is absent from response metadata
+- [ ] T123a [US5] Add `ranking_explain_level` parameter (`off`/`basic`/`full`) to `crates/codecompass-mcp/src/tools/search_code.rs` and `crates/codecompass-mcp/src/tools/locate_symbol.rs`, with default `off`
+- [ ] T123b [US5] Implement compact explainability serialization in `crates/codecompass-query/src/ranking.rs`: `basic` mode emits normalized factors only, `full` keeps full debug payload
+- [ ] T123c [P] [US5] Add benchmark + integration coverage for explainability levels: verify `basic` payload is smaller than `full` and p95 overhead stays within target
 
 **Checkpoint**: Debug mode includes per-result ranking explanations
 
@@ -221,6 +224,6 @@
 - [USn] label maps task to specific user story
 - Commit after each task or logical group
 - Stop at any checkpoint to validate independently
-- Total: 58 tasks, 7 phases
+- Total: 61 tasks, 7 phases
 - No new crate dependencies required
 - No new storage schemas — all queries against existing 001-core-mvp tables

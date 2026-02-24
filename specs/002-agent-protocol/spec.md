@@ -15,7 +15,9 @@ An AI coding agent calls `search_code` or `locate_symbol` and specifies
 `detail_level: "location"` to get minimal token-cost results for existence
 checks, or `detail_level: "context"` when it needs implementation details.
 The default `"signature"` level gives the agent API shape information without
-reading function bodies. This reduces agent token consumption by 5-10x on
+reading function bodies. With `compact: true`, large optional blocks are omitted
+while preserving follow-up handles and ranking order. This reduces agent token
+consumption by 5-10x on
 location-only queries compared to always returning full context.
 
 **Why this priority**: Constitution principle V (Agent-Aware Response Design)
@@ -174,6 +176,10 @@ includes a `ranking_reasons` object with the expected scoring factors.
 3. **Given** a search where one result is an exact symbol match, **When**
    ranking reasons are inspected, **Then** `exact_match_boost` is nonzero
    for that result and zero for non-exact matches.
+4. **Given** `ranking_explain_level: "basic"`, **When** `search_code` is called,
+   **Then** only normalized compact factors are returned (no verbose per-stage
+   internals). **Given** `ranking_explain_level: "full"`, **Then** full debug
+   factors are returned.
 
 ---
 
@@ -249,6 +255,14 @@ freshness policy level and verify the expected behavior.
 - **FR-105**: `detail_level` MUST be applied to response serialization only,
   not to query logic (all results are retrieved and ranked identically
   regardless of detail level).
+- **FR-105a**: `search_code` and `locate_symbol` MUST accept `compact: bool`
+  (default false). When true, serialization omits large optional payload fields
+  while preserving identity/location/score/follow-up handles.
+- **FR-105b**: Query responses MUST deduplicate near-identical hits by
+  symbol/file-region before final top-k emission and surface suppressed count in metadata.
+- **FR-105c**: Query responses MUST enforce hard payload safety limits and use
+  `result_completeness: "truncated"` + deterministic suggested next actions
+  instead of hard failure.
 - **FR-106**: System MUST provide a `get_file_outline` MCP tool that returns
   a nested symbol tree for a given file path and ref.
 - **FR-107**: `get_file_outline` MUST accept `path`, `ref`, `depth`
@@ -274,6 +288,11 @@ freshness policy level and verify the expected behavior.
 - **FR-115**: `ranking_reasons` MUST contain per-result breakdown with fields:
   `exact_match_boost`, `qualified_name_boost`, `path_affinity`,
   `definition_boost`, `kind_match`, `bm25_score`.
+- **FR-115a**: `search_code` and `locate_symbol` MUST support
+  `ranking_explain_level` (`off` | `basic` | `full`) where:
+  - `off` omits ranking explanations,
+  - `basic` emits compact normalized factors for agent routing,
+  - `full` emits full debug scoring breakdown for diagnostics.
 - **FR-116**: System MUST perform a pre-query freshness check with configurable
   policy levels: `strict`, `balanced` (default), `best_effort`.
 - **FR-117**: Under `strict` policy, the system MUST block queries when the
@@ -311,6 +330,8 @@ entities from 001-core-mvp:
   on average across benchmark queries.
 - **SC-102**: `detail_level: "signature"` responses are <= 120 tokens per result
   on average.
+- **SC-102a**: `compact: true` responses are <= 20% payload bytes vs
+  non-compact responses for the same query/limit.
 - **SC-103**: `get_file_outline` responds in p95 < 50ms on files with up to
   200 symbols.
 - **SC-104**: First query after `serve-mcp` startup (with prewarm) completes
@@ -318,3 +339,5 @@ entities from 001-core-mvp:
 - **SC-105**: `health_check` responds in p95 < 10ms.
 - **SC-106**: Stale-aware `balanced` policy returns results within the same
   p95 latency envelope as non-stale queries (freshness check adds < 5ms).
+- **SC-107**: `ranking_explain_level: "basic"` increases warm `search_code`
+  p95 latency by <= 10% versus `off` on the same benchmark suite.
