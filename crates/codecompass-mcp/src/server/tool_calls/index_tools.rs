@@ -7,7 +7,6 @@ pub(super) fn handle_index_or_sync(params: IndexToolParams<'_>) -> JsonRpcRespon
         arguments,
         config,
         schema_status,
-        compatibility_reason: _compatibility_reason,
         conn,
         workspace,
         project_id,
