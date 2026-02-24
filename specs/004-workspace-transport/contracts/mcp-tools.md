@@ -391,7 +391,7 @@ Minimum mapping requirements:
 | Condition | `error.code` |
 |-----------|--------------|
 | Malformed JSON / invalid JSON-RPC payload | `invalid_input` |
-| Unknown workspace with auto-discovery disabled | `workspace_not_registered` |
+| Unknown workspace with auto-workspace disabled | `workspace_not_registered` |
 | Workspace outside allowlist | `workspace_not_allowed` |
 | Schema mismatch / corrupt manifest during tool call | `index_incompatible` |
 
@@ -408,7 +408,7 @@ Options:
   --bind <ADDR>                Bind address [default: 127.0.0.1] (only with --transport http)
   --workspace <PATH>           Pre-register workspace (repeatable)
   --auto-workspace             Enable on-demand workspace discovery (opt-in)
-  --allowed-root <PATH>        Allowed root prefix for auto-discovery (repeatable, required with --auto-workspace)
+  --allowed-root <PATH>        Allowed root prefix for auto-workspace (repeatable, required with --auto-workspace)
   --no-prewarm                 Skip Tantivy index prewarming on startup
   -v, --verbose                Increase log verbosity
   --config <PATH>              Custom config file path

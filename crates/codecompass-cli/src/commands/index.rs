@@ -74,6 +74,10 @@ pub fn run(
         duration_ms: None,
         error_message: None,
         retry_count: 0,
+        progress_token: Some(format!("index-job-{}", job_id)),
+        files_scanned: 0,
+        files_indexed: 0,
+        symbols_extracted: 0,
         created_at: now.clone(),
         updated_at: now.clone(),
     };

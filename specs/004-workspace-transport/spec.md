@@ -226,8 +226,9 @@ an MCP `tools/list` request via HTTP POST and verify the response.
 - **FR-325**: All tool responses in this spec MUST use canonical metadata enums:
   `indexing_status` = `not_indexed | indexing | ready | failed`,
   `result_completeness` = `complete | partial | truncated`.
-- **FR-326**: System MUST maintain a bounded workspace warmset derived from
-  `known_workspaces.last_used_at` and prewarm only warmset members during startup.
+- **FR-326**: System MUST maintain a bounded workspace warmset (default capacity: 3,
+  configurable) derived from `known_workspaces.last_used_at` and prewarm only warmset
+  members during startup. The `--no-prewarm` flag MUST skip warmset prewarming entirely.
 - **FR-327**: `index_status` and `health_check` MUST expose
   `interrupted_recovery_report` when interrupted jobs are detected after restart.
 

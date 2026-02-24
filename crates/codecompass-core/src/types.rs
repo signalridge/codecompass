@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 /// A registered workspace/project.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -283,6 +284,7 @@ pub enum JobStatus {
     Published,
     Failed,
     RolledBack,
+    Interrupted,
 }
 
 impl JobStatus {
@@ -294,6 +296,7 @@ impl JobStatus {
             Self::Published => "published",
             Self::Failed => "failed",
             Self::RolledBack => "rolled_back",
+            Self::Interrupted => "interrupted",
         }
     }
 }
@@ -305,6 +308,70 @@ pub fn generate_project_id(repo_root: &str) -> String {
         std::fs::canonicalize(repo_root).unwrap_or_else(|_| std::path::PathBuf::from(repo_root));
     let hash = blake3::hash(canonical.to_string_lossy().as_bytes());
     hash.to_hex()[..16].to_string()
+}
+
+/// Configuration for multi-workspace auto-discovery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceConfig {
+    pub auto_workspace: bool,
+    pub allowed_roots: AllowedRoots,
+    pub max_auto_workspaces: usize,
+}
+
+impl Default for WorkspaceConfig {
+    fn default() -> Self {
+        Self {
+            auto_workspace: false,
+            allowed_roots: AllowedRoots::default(),
+            max_auto_workspaces: 10,
+        }
+    }
+}
+
+/// Newtype around a set of allowed root path prefixes for workspace validation.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AllowedRoots(Vec<PathBuf>);
+
+impl AllowedRoots {
+    pub fn new(roots: Vec<PathBuf>) -> Self {
+        Self(roots)
+    }
+
+    /// Check if the given path falls under at least one allowed root prefix.
+    /// Both `path` and the stored roots are assumed to be already canonicalized.
+    pub fn contains(&self, path: &Path) -> bool {
+        self.0.iter().any(|root| path.starts_with(root))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// Validate and canonicalize a workspace path against allowed roots.
+///
+/// 1. Resolves `path` via `std::fs::canonicalize` (realpath equivalent).
+/// 2. Verifies the resolved path starts with at least one allowed root prefix.
+/// 3. Returns the canonicalized path on success.
+pub fn validate_workspace_path(
+    path: &Path,
+    allowed_roots: &AllowedRoots,
+) -> std::result::Result<PathBuf, crate::error::WorkspaceError> {
+    let canonical = std::fs::canonicalize(path).map_err(|e| {
+        crate::error::WorkspaceError::NotAllowed {
+            path: path.display().to_string(),
+            reason: format!("path resolution failed: {e}"),
+        }
+    })?;
+
+    if !allowed_roots.contains(&canonical) {
+        return Err(crate::error::WorkspaceError::NotAllowed {
+            path: canonical.display().to_string(),
+            reason: "path is outside all --allowed-root prefixes".to_string(),
+        });
+    }
+
+    Ok(canonical)
 }
 
 /// Compute symbol_stable_id using blake3.

@@ -92,13 +92,16 @@
 - [ ] T235 [P] [US3] Write security test: verify HTTP server defaults to `127.0.0.1` bind, not `0.0.0.0`
 - [ ] T236 [US1] Implement workspace eviction: when `max_auto_workspaces` limit is reached, evict the LRU auto-discovered workspace (by `last_used_at`), clean up its index data, log the eviction
 - [ ] T237 [P] Add `--help` text for new CLI flags: `--transport`, `--port`, `--bind`, `--auto-workspace`, `--allowed-root` with usage examples
-- [ ] T238 Update `tools/list` response to include `workspace` parameter in all tool schemas, ensure HTTP error mapping uses canonical machine-readable `error.code` values from `specs/meta/protocol-error-codes.md` (including malformed JSON-RPC and workspace/compatibility failures), and normalize metadata enums (`indexing_status`, `result_completeness`) in all updated tool contracts
+- [ ] T238a Update `tools/list` response to include `workspace` parameter in all tool schemas and add contract test verifying all query/path tools expose `workspace`
+- [ ] T238b Ensure HTTP error mapping uses canonical machine-readable `error.code` values from `specs/meta/protocol-error-codes.md` (including `invalid_input`, `workspace_not_registered`, `workspace_not_allowed`, `index_incompatible`)
+- [ ] T238c Normalize metadata enums (`indexing_status`, `result_completeness`) in all updated tool response structs
 - [ ] T239 [P] Write E2E test: start server with `--auto-workspace --allowed-root /tmp`, auto-discover 3 workspaces, query each, verify `known_workspaces` table has 3 entries with correct `last_used_at` updates
-- [ ] T454 [US1] Implement warmset prewarm selection in `crates/codecompass-cli/src/commands/serve_mcp.rs` and `crates/codecompass-state/src/workspace.rs`: load most-recently-used workspaces up to configurable bound and prewarm only those indices
+- [ ] T454 [US1] Implement warmset prewarm selection in `crates/codecompass-cli/src/commands/serve_mcp.rs` and `crates/codecompass-state/src/workspace.rs`: load most-recently-used workspaces up to configurable bound (default: 3) and prewarm only those indices; implement `--no-prewarm` CLI flag to skip warmset prewarming entirely
 - [ ] T455 [US2] Implement interrupted job reconciliation in `crates/codecompass-state/src/jobs.rs`: mark leftover running jobs as `interrupted` on startup and surface `interrupted_recovery_report` via `crates/codecompass-mcp/src/tools/index_status.rs` and `crates/codecompass-mcp/src/tools/health_check.rs`
 - [ ] T456 [P] [US2] Add integration tests for restart recovery + warmset behavior: verify interrupted report visibility and warmset-first latency improvements on recent workspaces
+- [ ] T457 [P] Write performance benchmark: verify `/health` p95 < 50ms (SC-303), workspace routing overhead < 5ms per request, and warmset-enabled startup first-query p95 < 400ms (SC-307)
 
-**Checkpoint**: Security hardened, CLI documented, E2E scenarios pass
+**Checkpoint**: Security hardened, CLI documented, E2E scenarios pass, performance verified
 
 ---
 
@@ -148,4 +151,4 @@
 - [USn] label maps task to specific user story
 - Commit after each task or logical group
 - Stop at any checkpoint to validate independently
-- Total: 47 tasks, 5 phases
+- Total: 49 tasks, 5 phases
