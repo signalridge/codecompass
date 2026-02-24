@@ -39,11 +39,25 @@ pub(super) struct IndexToolParams<'a> {
     pub project_id: &'a str,
 }
 
+pub(super) struct ReadToolParams<'a> {
+    pub id: Option<Value>,
+    pub arguments: &'a Value,
+    pub config: &'a Config,
+    pub schema_status: SchemaStatus,
+    pub compatibility_reason: Option<&'a str>,
+    pub conn: Option<&'a rusqlite::Connection>,
+    pub workspace: &'a Path,
+    pub project_id: &'a str,
+}
+
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
+mod context_tools;
 mod health_tools;
 mod index_tools;
 mod query_tools;
+mod status_tools;
+mod structure_tools;
 
 pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
     // Handle health_check before destructuring since it needs the full params struct
@@ -88,669 +102,57 @@ pub(super) fn handle_tool_call(params: ToolCallParams<'_>) -> JsonRpcResponse {
             workspace,
             project_id,
         }),
-        "get_symbol_hierarchy" => {
-            let symbol_name = arguments
-                .get("symbol_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let path = arguments.get("path").and_then(|v| v.as_str());
-            let requested_ref = arguments.get("ref").and_then(|v| v.as_str());
-            let direction_raw = arguments
-                .get("direction")
-                .and_then(|v| v.as_str())
-                .unwrap_or("ancestors");
-            let direction = match direction_raw {
-                "ancestors" => hierarchy::HierarchyDirection::Ancestors,
-                "descendants" => hierarchy::HierarchyDirection::Descendants,
-                _ => {
-                    let effective_ref =
-                        resolve_tool_ref(requested_ref, workspace, conn, project_id);
-                    let metadata = build_metadata(
-                        &effective_ref,
-                        schema_status,
-                        config,
-                        conn,
-                        workspace,
-                        project_id,
-                    );
-                    return tool_error_response(
-                        id,
-                        "invalid_input",
-                        "Parameter `direction` must be `ancestors` or `descendants`.",
-                        None,
-                        metadata,
-                    );
-                }
-            };
-            let effective_ref = resolve_tool_ref(requested_ref, workspace, conn, project_id);
-
-            // Freshness check
-            let freshness = check_and_enforce_freshness(
-                id.clone(),
-                arguments,
-                config,
-                conn,
-                workspace,
-                project_id,
-                &effective_ref,
-                schema_status,
-            );
-            if let Some(block) = freshness.block_response {
-                return block;
-            }
-            let metadata = freshness.metadata;
-
-            if symbol_name.trim().is_empty() {
-                return tool_error_response(
-                    id,
-                    "invalid_input",
-                    "Parameter `symbol_name` is required.",
-                    None,
-                    metadata,
-                );
-            }
-
-            let Some(c) = conn else {
-                return tool_compatibility_error(ToolCompatibilityParams {
-                    id,
-                    schema_status,
-                    compatibility_reason,
-                    config,
-                    conn,
-                    workspace,
-                    project_id,
-                    ref_name: &effective_ref,
-                });
-            };
-
-            match hierarchy::get_symbol_hierarchy(
-                c,
-                project_id,
-                &effective_ref,
-                symbol_name,
-                path,
-                direction,
-            ) {
-                Ok(response) => tool_text_response(
-                    id,
-                    json!({
-                        "hierarchy": response.hierarchy,
-                        "direction": response.direction,
-                        "chain_length": response.chain_length,
-                        "metadata": metadata,
-                    }),
-                ),
-                Err(hierarchy::HierarchyError::SymbolNotFound) => tool_error_response(
-                    id,
-                    "symbol_not_found",
-                    "No symbol matching the requested name was found.",
-                    Some(json!({
-                        "symbol_name": symbol_name,
-                        "path": path,
-                        "ref": effective_ref,
-                    })),
-                    metadata,
-                ),
-                Err(hierarchy::HierarchyError::AmbiguousSymbol { count }) => tool_error_response(
-                    id,
-                    "ambiguous_symbol",
-                    "Multiple symbols matched. Provide `path` to disambiguate.",
-                    Some(json!({
-                        "symbol_name": symbol_name,
-                        "candidate_count": count,
-                    })),
-                    metadata,
-                ),
-                Err(hierarchy::HierarchyError::State(e)) => {
-                    let (code, message, data) = map_state_error(&e);
-                    tool_error_response(id, code, message, data, metadata)
-                }
-            }
-        }
-        "find_related_symbols" => {
-            let symbol_name = arguments
-                .get("symbol_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let path = arguments.get("path").and_then(|v| v.as_str());
-            let requested_ref = arguments.get("ref").and_then(|v| v.as_str());
-            let scope = match arguments
-                .get("scope")
-                .and_then(|v| v.as_str())
-                .unwrap_or("file")
-            {
-                "file" => related::RelatedScope::File,
-                "module" => related::RelatedScope::Module,
-                "package" => related::RelatedScope::Package,
-                _ => {
-                    let effective_ref =
-                        resolve_tool_ref(requested_ref, workspace, conn, project_id);
-                    let metadata = build_metadata(
-                        &effective_ref,
-                        schema_status,
-                        config,
-                        conn,
-                        workspace,
-                        project_id,
-                    );
-                    return tool_error_response(
-                        id,
-                        "invalid_input",
-                        "Parameter `scope` must be `file`, `module`, or `package`.",
-                        None,
-                        metadata,
-                    );
-                }
-            };
-            let limit = arguments
-                .get("limit")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(20) as usize;
-            let effective_ref = resolve_tool_ref(requested_ref, workspace, conn, project_id);
-
-            // Freshness check
-            let freshness = check_and_enforce_freshness(
-                id.clone(),
-                arguments,
-                config,
-                conn,
-                workspace,
-                project_id,
-                &effective_ref,
-                schema_status,
-            );
-            if let Some(block) = freshness.block_response {
-                return block;
-            }
-            let metadata = freshness.metadata;
-
-            if symbol_name.trim().is_empty() {
-                return tool_error_response(
-                    id,
-                    "invalid_input",
-                    "Parameter `symbol_name` is required.",
-                    None,
-                    metadata,
-                );
-            }
-
-            let Some(c) = conn else {
-                return tool_compatibility_error(ToolCompatibilityParams {
-                    id,
-                    schema_status,
-                    compatibility_reason,
-                    config,
-                    conn,
-                    workspace,
-                    project_id,
-                    ref_name: &effective_ref,
-                });
-            };
-
-            match related::find_related_symbols(
-                c,
-                project_id,
-                &effective_ref,
-                symbol_name,
-                path,
-                scope,
-                limit,
-            ) {
-                Ok(response) => tool_text_response(
-                    id,
-                    json!({
-                        "anchor": response.anchor,
-                        "related": response.related,
-                        "scope_used": response.scope_used,
-                        "total_found": response.total_found,
-                        "metadata": metadata,
-                    }),
-                ),
-                Err(related::RelatedError::SymbolNotFound) => tool_error_response(
-                    id,
-                    "symbol_not_found",
-                    "No symbol matching the requested name was found.",
-                    Some(json!({
-                        "symbol_name": symbol_name,
-                        "path": path,
-                        "ref": effective_ref,
-                    })),
-                    metadata,
-                ),
-                Err(related::RelatedError::AmbiguousSymbol { count }) => tool_error_response(
-                    id,
-                    "ambiguous_symbol",
-                    "Multiple symbols matched. Provide `path` to disambiguate.",
-                    Some(json!({
-                        "symbol_name": symbol_name,
-                        "candidate_count": count,
-                    })),
-                    metadata,
-                ),
-                Err(related::RelatedError::State(e)) => {
-                    let (code, message, data) = map_state_error(&e);
-                    tool_error_response(id, code, message, data, metadata)
-                }
-            }
-        }
-        "get_code_context" => {
-            let query = arguments
-                .get("query")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let requested_ref = arguments.get("ref").and_then(|v| v.as_str());
-            let language = arguments.get("language").and_then(|v| v.as_str());
-            let effective_ref = resolve_tool_ref(requested_ref, workspace, conn, project_id);
-            let mut metadata = build_metadata(
-                &effective_ref,
-                schema_status,
-                config,
-                conn,
-                workspace,
-                project_id,
-            );
-
-            if query.trim().is_empty() {
-                return tool_error_response(
-                    id,
-                    "invalid_input",
-                    "Parameter `query` is required.",
-                    None,
-                    metadata,
-                );
-            }
-            let max_tokens = match arguments.get("max_tokens") {
-                None => 4000usize,
-                Some(value) => {
-                    if let Some(raw_u64) = value.as_u64() {
-                        if raw_u64 == 0 {
-                            return tool_error_response(
-                                id,
-                                "invalid_max_tokens",
-                                "Parameter `max_tokens` must be greater than 0.",
-                                None,
-                                metadata,
-                            );
-                        }
-                        match usize::try_from(raw_u64) {
-                            Ok(v) => v,
-                            Err(_) => {
-                                return tool_error_response(
-                                    id,
-                                    "invalid_max_tokens",
-                                    "Parameter `max_tokens` is too large.",
-                                    None,
-                                    metadata,
-                                );
-                            }
-                        }
-                    } else {
-                        return tool_error_response(
-                            id,
-                            "invalid_max_tokens",
-                            "Parameter `max_tokens` must be a positive integer.",
-                            None,
-                            metadata,
-                        );
-                    }
-                }
-            };
-            let strategy =
-                match context::parse_strategy(arguments.get("strategy").and_then(|v| v.as_str())) {
-                    Ok(strategy) => strategy,
-                    Err(context::ContextError::InvalidStrategy) => {
-                        return tool_error_response(
-                            id,
-                            "invalid_strategy",
-                            "Parameter `strategy` must be `breadth` or `depth`.",
-                            None,
-                            metadata,
-                        );
-                    }
-                    Err(_) => {
-                        return tool_error_response(
-                            id,
-                            "invalid_input",
-                            "Invalid `strategy` parameter.",
-                            None,
-                            metadata,
-                        );
-                    }
-                };
-
-            let Some(index_set) = index_set else {
-                return tool_compatibility_error(ToolCompatibilityParams {
-                    id,
-                    schema_status,
-                    compatibility_reason,
-                    config,
-                    conn,
-                    workspace,
-                    project_id,
-                    ref_name: &effective_ref,
-                });
-            };
-
-            if schema_status != SchemaStatus::Compatible {
-                return tool_compatibility_error(ToolCompatibilityParams {
-                    id,
-                    schema_status,
-                    compatibility_reason,
-                    config,
-                    conn,
-                    workspace,
-                    project_id,
-                    ref_name: &effective_ref,
-                });
-            }
-
-            // Freshness check
-            let freshness = check_and_enforce_freshness(
-                id.clone(),
-                arguments,
-                config,
-                conn,
-                workspace,
-                project_id,
-                &effective_ref,
-                schema_status,
-            );
-            if let Some(block) = freshness.block_response {
-                return block;
-            }
-            metadata = freshness.metadata;
-
-            match context::get_code_context(context::GetCodeContextParams {
-                index_set,
-                conn,
-                workspace,
-                query,
-                ref_name: Some(&effective_ref),
-                language,
-                max_tokens,
-                strategy,
-            }) {
-                Ok(response) => {
-                    if response.truncated {
-                        metadata.result_completeness =
-                            codecompass_core::types::ResultCompleteness::Truncated;
-                    }
-                    let mut merged_metadata = response.metadata;
-                    if let Some(obj) = merged_metadata.as_object_mut() {
-                        obj.insert(
-                            "codecompass_protocol_version".to_string(),
-                            json!(metadata.codecompass_protocol_version),
-                        );
-                        obj.insert(
-                            "freshness_status".to_string(),
-                            json!(metadata.freshness_status),
-                        );
-                        obj.insert(
-                            "indexing_status".to_string(),
-                            json!(metadata.indexing_status),
-                        );
-                        obj.insert(
-                            "result_completeness".to_string(),
-                            json!(metadata.result_completeness),
-                        );
-                        obj.insert("ref".to_string(), json!(metadata.r#ref));
-                        obj.insert("schema_status".to_string(), json!(metadata.schema_status));
-                    }
-                    tool_text_response(
-                        id,
-                        json!({
-                            "context_items": response.context_items,
-                            "estimated_tokens": response.estimated_tokens,
-                            "truncated": response.truncated,
-                            "metadata": merged_metadata,
-                        }),
-                    )
-                }
-                Err(context::ContextError::InvalidMaxTokens) => tool_error_response(
-                    id,
-                    "invalid_max_tokens",
-                    "Parameter `max_tokens` must be greater than 0.",
-                    None,
-                    metadata,
-                ),
-                Err(context::ContextError::State(e)) => {
-                    let (code, message, data) = map_state_error(&e);
-                    tool_error_response(id, code, message, data, metadata)
-                }
-                Err(context::ContextError::InvalidStrategy) => tool_error_response(
-                    id,
-                    "invalid_strategy",
-                    "Parameter `strategy` must be `breadth` or `depth`.",
-                    None,
-                    metadata,
-                ),
-            }
-        }
-        "get_file_outline" => {
-            let path = arguments.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            let requested_ref = arguments.get("ref").and_then(|v| v.as_str());
-            let depth = arguments
-                .get("depth")
-                .and_then(|v| v.as_str())
-                .unwrap_or("all");
-            let effective_ref = resolve_tool_ref(requested_ref, workspace, conn, project_id);
-            let metadata = build_metadata(
-                &effective_ref,
-                schema_status,
-                config,
-                conn,
-                workspace,
-                project_id,
-            );
-
-            if path.trim().is_empty() {
-                return tool_error_response(
-                    id,
-                    "invalid_input",
-                    "Parameter `path` is required.",
-                    None,
-                    metadata,
-                );
-            }
-
-            let Some(c) = conn else {
-                return tool_compatibility_error(ToolCompatibilityParams {
-                    id,
-                    schema_status,
-                    compatibility_reason,
-                    config,
-                    conn,
-                    workspace,
-                    project_id,
-                    ref_name: &effective_ref,
-                });
-            };
-
-            let top_only = depth == "top";
-            match codecompass_state::symbols::get_file_outline_query(
-                c,
-                project_id,
-                &effective_ref,
-                path,
-                top_only,
-            ) {
-                Ok(flat_symbols) => {
-                    if flat_symbols.is_empty() {
-                        let file_exists = codecompass_state::manifest::get_content_hash(
-                            c,
-                            project_id,
-                            &effective_ref,
-                            path,
-                        )
-                        .ok()
-                        .flatten()
-                        .is_some();
-                        if file_exists {
-                            let language = arguments
-                                .get("language")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or_default();
-                            let response = json!({
-                                "file_path": path,
-                                "language": language,
-                                "symbols": [],
-                                "metadata": {
-                                    "codecompass_protocol_version": metadata.codecompass_protocol_version,
-                                    "freshness_status": metadata.freshness_status,
-                                    "indexing_status": metadata.indexing_status,
-                                    "result_completeness": metadata.result_completeness,
-                                    "ref": effective_ref,
-                                    "schema_status": metadata.schema_status,
-                                    "symbol_count": 0,
-                                },
-                            });
-                            return tool_text_response(id, response);
-                        }
-                        return tool_error_response(
-                            id,
-                            "file_not_found",
-                            format!(
-                                "No symbols found for path '{}' on ref '{}'.",
-                                path, effective_ref
-                            ),
-                            Some(json!({
-                                "path": path,
-                                "ref": effective_ref,
-                                "remediation": "Verify the file path and ensure the project is indexed.",
-                            })),
-                            metadata,
-                        );
-                    }
-
-                    let symbol_count = flat_symbols.len();
-                    let language = flat_symbols
-                        .first()
-                        .map(|s| s.language.clone())
-                        .unwrap_or_default();
-
-                    let symbols = if top_only {
-                        flat_symbols
-                    } else {
-                        codecompass_state::symbols::build_symbol_tree(flat_symbols)
-                    };
-
-                    let response = json!({
-                        "file_path": path,
-                        "language": language,
-                        "symbols": symbols,
-                        "metadata": {
-                            "codecompass_protocol_version": metadata.codecompass_protocol_version,
-                            "freshness_status": metadata.freshness_status,
-                            "indexing_status": metadata.indexing_status,
-                            "result_completeness": metadata.result_completeness,
-                            "ref": effective_ref,
-                            "schema_status": metadata.schema_status,
-                            "symbol_count": symbol_count,
-                        },
-                    });
-                    tool_text_response(id, response)
-                }
-                Err(e) => {
-                    let (code, message, data) = map_state_error(&e);
-                    tool_error_response(id, code, message, data, metadata)
-                }
-            }
-        }
-        "index_status" => {
-            let requested_ref = arguments.get("ref").and_then(|v| v.as_str());
-            let effective_ref = resolve_tool_ref(requested_ref, workspace, conn, project_id);
-            let stored_schema_version = conn.and_then(|c| {
-                codecompass_state::project::get_by_id(c, project_id)
-                    .ok()
-                    .flatten()
-                    .map(|p| p.schema_version)
-            });
-            let (status, schema_status_str, current_schema_version) = match schema_status {
-                SchemaStatus::Compatible => ("ready", "compatible", constants::SCHEMA_VERSION),
-                SchemaStatus::NotIndexed => (
-                    "not_indexed",
-                    "not_indexed",
-                    stored_schema_version.unwrap_or(0),
-                ),
-                SchemaStatus::ReindexRequired => (
-                    "not_indexed",
-                    "reindex_required",
-                    stored_schema_version.unwrap_or(0),
-                ),
-                SchemaStatus::CorruptManifest => (
-                    "not_indexed",
-                    "corrupt_manifest",
-                    stored_schema_version.unwrap_or(0),
-                ),
-            };
-
-            // Gather counts from SQLite if available
-            let (file_count, symbol_count) = conn
-                .map(|c| {
-                    let fc = codecompass_state::manifest::file_count(c, project_id, &effective_ref)
-                        .unwrap_or(0);
-                    let sc =
-                        codecompass_state::symbols::symbol_count(c, project_id, &effective_ref)
-                            .unwrap_or(0);
-                    (fc, sc)
-                })
-                .unwrap_or((0, 0));
-
-            // Get recent jobs
-            let recent_jobs = conn
-                .and_then(|c| codecompass_state::jobs::get_recent_jobs(c, project_id, 5).ok())
-                .unwrap_or_default();
-
-            let active_job = conn.and_then(|c| {
-                codecompass_state::jobs::get_active_job(c, project_id)
-                    .ok()
-                    .flatten()
-            });
-
-            // Derive last_indexed_at from the most recent published job for this ref
-            let last_indexed_at: Option<String> = recent_jobs
-                .iter()
-                .find(|j| j.status == "published" && j.r#ref == effective_ref)
-                .map(|j| j.updated_at.clone());
-
-            let result = json!({
-                "project_id": project_id,
-                "repo_root": workspace.to_string_lossy(),
-                "index_status": status,
-                "schema_status": schema_status_str,
-                "current_schema_version": current_schema_version,
-                "required_schema_version": constants::SCHEMA_VERSION,
-                "last_indexed_at": last_indexed_at,
-                "ref": effective_ref,
-                "file_count": file_count,
-                "symbol_count": symbol_count,
-                "compatibility_reason": compatibility_reason,
-                "active_job": active_job.map(|j| json!({
-                    "job_id": j.job_id,
-                    "mode": j.mode,
-                    "status": j.status,
-                    "ref": j.r#ref,
-                })),
-                "recent_jobs": recent_jobs.iter().map(|j| json!({
-                    "job_id": j.job_id,
-                    "ref": j.r#ref,
-                    "mode": j.mode,
-                    "status": j.status,
-                    "changed_files": j.changed_files,
-                    "duration_ms": j.duration_ms,
-                    "created_at": j.created_at,
-                })).collect::<Vec<_>>(),
-                "metadata": build_metadata(
-                    &effective_ref,
-                    schema_status,
-                    config,
-                    conn,
-                    workspace,
-                    project_id
-                ),
-            });
-            tool_text_response(id, result)
-        }
+        "get_symbol_hierarchy" => structure_tools::handle_get_symbol_hierarchy(ReadToolParams {
+            id,
+            arguments,
+            config,
+            schema_status,
+            compatibility_reason,
+            conn,
+            workspace,
+            project_id,
+        }),
+        "find_related_symbols" => structure_tools::handle_find_related_symbols(ReadToolParams {
+            id,
+            arguments,
+            config,
+            schema_status,
+            compatibility_reason,
+            conn,
+            workspace,
+            project_id,
+        }),
+        "get_code_context" => context_tools::handle_get_code_context(QueryToolParams {
+            id,
+            arguments,
+            config,
+            index_set,
+            schema_status,
+            compatibility_reason,
+            conn,
+            workspace,
+            project_id,
+        }),
+        "get_file_outline" => structure_tools::handle_get_file_outline(ReadToolParams {
+            id,
+            arguments,
+            config,
+            schema_status,
+            compatibility_reason,
+            conn,
+            workspace,
+            project_id,
+        }),
+        "index_status" => status_tools::handle_index_status(ReadToolParams {
+            id,
+            arguments,
+            config,
+            schema_status,
+            compatibility_reason,
+            conn,
+            workspace,
+            project_id,
+        }),
         "index_repo" | "sync_repo" => index_tools::handle_index_or_sync(IndexToolParams {
             id,
             tool_name,
