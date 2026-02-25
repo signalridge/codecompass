@@ -119,10 +119,10 @@ returned with correct file paths and edge types.
 
 A maintainer investigating unexpected search result ordering calls
 `explain_ranking` with a query and a specific result entry. The system returns
-a `RankingExplanation` showing the deterministic scoring components: the
-per-index BM25 scores, RRF contribution from each index, definition-first
-boost, and final merged rank. This allows maintainers to diagnose and tune
-search quality.
+a `RankingExplanation` showing deterministic scoring components (`bm25`,
+`exact_match`, `qualified_name`, `path_affinity`, `definition_boost`,
+`kind_match`, `total`) plus per-component explanation strings. This allows
+maintainers to diagnose and tune search quality.
 
 **Why this priority**: Without ranking transparency, debugging search quality
 issues requires guesswork. This tool provides the introspection needed to
@@ -137,8 +137,8 @@ breakdown is byte-identical across invocations.
 1. **Given** a query `"validate_token"` that returns a ranked result list,
    **When** `explain_ranking` is called with the query and one result entry,
    **Then** the response contains a `RankingExplanation` with fields for
-   `symbols_score`, `snippets_score`, `files_score`, `rrf_contribution`,
-   `definition_boost`, and `final_rank`.
+   `bm25`, `exact_match`, `qualified_name`, `path_affinity`,
+   `definition_boost`, `kind_match`, and `total`.
 2. **Given** the same query and index state, **When** `explain_ranking` is
    called twice, **Then** both responses produce identical scoring values
    (deterministic output).
@@ -154,8 +154,8 @@ breakdown is byte-identical across invocations.
 ### User Story 4 - List and Switch Refs (Priority: P2)
 
 An AI agent calls `list_refs` to discover all indexed refs for the current
-project, receiving a list of `RefDescriptor` entries with name, indexed commit
-hash, and freshness metadata. The agent then calls `switch_ref` to set the
+project, receiving a list of `RefDescriptor` entries with ref name, indexed
+commit hash, status, and counts. The agent then calls `switch_ref` to set the
 active ref scope for subsequent queries. These tools provide predictable ref
 lifecycle management for multi-branch workflows.
 
@@ -171,11 +171,11 @@ helpers eliminate ref-related errors in agentic workflows.
 
 1. **Given** a project with refs `main` and `feat/auth` indexed, **When**
    `list_refs` is called, **Then** the response contains two `RefDescriptor`
-   entries, each with `name`, `indexed_commit`, and `freshness` fields.
-2. **Given** `list_refs` returns `main` with `freshness: "fresh"` and
-   `feat/auth` with `freshness: "stale"`, **When** the agent reads the
-   response, **Then** each entry accurately reflects whether the indexed commit
-   matches the current branch HEAD.
+   entries, each with `ref`, `last_indexed_commit`, and `status` fields.
+2. **Given** `list_refs` returns both `main` and `feat/auth`, **When** the
+   agent reads the response metadata, **Then** protocol-level freshness is
+   exposed in `metadata.freshness_status` and can be interpreted independently
+   of per-ref status.
 3. **Given** `switch_ref` is called with `ref: "feat/auth"`, **When** a
    subsequent `search_code` call is made, **Then** results are scoped to the
    `feat/auth` ref.
