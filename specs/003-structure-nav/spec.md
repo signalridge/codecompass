@@ -7,6 +7,13 @@
 **Depends On**: 002-agent-protocol
 **Input**: Phase 1.5a items from development plan: symbol edge population, hierarchy traversal, related symbol discovery, and token budget-aware context retrieval.
 
+## Implementation Alignment Update (2026-02-25)
+
+- `symbol_edges` schema now includes composite indexes for forward/reverse
+  `(repo, ref, symbol_id, edge_type)` lookup paths.
+- Query-shape regression tests verify index-backed plans for forward and reverse
+  typed edge traversals.
+
 ## User Scenarios & Testing
 
 ### User Story 1 - Populate Import Edges from Source Code (Priority: P1)

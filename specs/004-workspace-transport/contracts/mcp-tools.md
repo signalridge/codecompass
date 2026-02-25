@@ -278,6 +278,12 @@ Readiness probe for load balancers, monitoring, and agent pre-flight checks.
   ],
   "version": "0.3.0",
   "uptime_seconds": 3600,
+  "interrupted_recovery_report": {
+    "detected": true,
+    "interrupted_jobs": 2,
+    "last_interrupted_at": "2026-02-24T02:15:00Z",
+    "recommended_action": "Run index_status for details; optionally re-run index_repo."
+  },
   "workspace_warmset": {
     "enabled": true,
     "capacity": 3,
@@ -302,6 +308,7 @@ Readiness probe for load balancers, monitoring, and agent pre-flight checks.
 | `projects[].symbol_count` | int | Number of indexed symbols. |
 | `version` | string | CodeCompass version. |
 | `uptime_seconds` | int | Seconds since server started. |
+| `interrupted_recovery_report` | object/null | Startup reconciliation report (same shape as `index_status`). Null when no interrupted jobs were detected. |
 | `workspace_warmset` | object | Warmset status for startup prewarm optimization (capacity is configurable; examples use `3`). |
 
 ### Status Logic

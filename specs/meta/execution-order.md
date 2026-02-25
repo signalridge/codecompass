@@ -2,6 +2,8 @@
 
 > Definitive inter-spec execution sequence.
 > Intra-spec ordering is defined in each `tasks.md`.
+> Parallel-collaboration boundaries are defined in
+> [`parallel-development-guardrails.md`](parallel-development-guardrails.md).
 
 ## Spec Dependency Chain
 
@@ -83,6 +85,8 @@ Apply these in parallel with feature development to reduce rework:
 - Prioritize `[P]` tasks by file independence.
 - Keep correctness chains serial inside each spec's critical path.
 - In VCS specs, avoid parallel writes touching same `(project, ref)` coordination paths.
+- Apply module ownership and high-conflict-path guardrails from
+  `specs/meta/parallel-development-guardrails.md`.
 
 ## Recommended Sprint Envelope (Single Team)
 

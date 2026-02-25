@@ -7,6 +7,15 @@
 **Depends On**: `001-core-mvp` (Phase 0+1)
 **Input**: `specs/meta/design.md` sections 10.2, 10.3, 10.6, 10.11; Constitution principles V (Agent-Aware Response Design), VII (Explainable Ranking)
 
+## Implementation Alignment Update (2026-02-25)
+
+- MCP query handlers are decomposed by domain (`query/structure/context/index/health/status`)
+  with shared helper modules for freshness, detail filtering, dedup, and payload limits.
+- `ranking_explain_level` and `freshness_policy` config values are normalized to canonical
+  runtime enums at load time, with legacy compatibility preserved.
+- Strict p95 assertions were moved into benchmark-harness entry points; default CI keeps
+  smoke-level latency guards.
+
 ## User Scenarios & Testing
 
 ### User Story 1 - Agent Controls Response Verbosity via Detail Level (Priority: P1)

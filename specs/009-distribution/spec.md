@@ -7,6 +7,13 @@
 **Depends On**: 008-semantic-hybrid
 **Input**: User description: "Build pipeline with cargo-dist + cross, Homebrew tap, MCP distribution docs, agent integration guides, local auto-indexing reference templates"
 
+## Readiness Baseline Update (2026-02-25)
+
+- Repository governance baseline is now present (`ci`, `security`, `pr-title`,
+  and OpenSpec trace gate workflows plus `.pre-commit-config.yaml`).
+- Parallel-development guardrails are documented under
+  `specs/meta/parallel-development-guardrails.md` for multi-stream release prep.
+
 ## User Scenarios & Testing
 
 ### User Story 1 - Install CodeCompass via Prebuilt Binary (Priority: P1)

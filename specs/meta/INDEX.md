@@ -18,6 +18,7 @@ specs/
     repo-maintenance.md              # CI/CD, governance, release, maintenance
     testing-strategy.md              # Test layers and traceability
     benchmark-targets.md             # Quantitative quality targets
+    parallel-development-guardrails.md # Module ownership + parallel touchpoints
 
   001-core-mvp/                      # v0.1.0
   002-agent-protocol/                # v0.2.0
@@ -64,6 +65,7 @@ specs/
 | maintenance | [Repo Maintenance](repo-maintenance.md) | CI/CD and operations | active |
 | testing | [Testing Strategy](testing-strategy.md) | Test plan and traceability | active |
 | benchmarks | [Benchmark Targets](benchmark-targets.md) | Acceptance thresholds | active |
+| parallel-guardrails | [Parallel Development Guardrails](parallel-development-guardrails.md) | Multi-stream change boundaries | active |
 
 > Competitive optimization guidance is consolidated into `design.md`,
 > `roadmap.md`, `testing-strategy.md`, and `benchmark-targets.md`.
