@@ -112,6 +112,33 @@ at least 100 labeled queries, stratified across Rust/TypeScript/Python/Go
 - Unit + integration tests: every PR
 - E2E suites: PR + merge-to-main
 - Relevance/performance benchmarks: merge-to-main and release gates
+- Runtime-sensitive p95 thresholds are executed via benchmark harness entrypoints
+  (ignored tests + script), while default test runs keep smoke-level latency guards.
+
+## Benchmark Harness Entry Points
+
+Use the dedicated benchmark harness script:
+
+```bash
+scripts/benchmarks/run_mcp_benchmarks.sh
+```
+
+Equivalent direct entry points:
+
+```bash
+cargo test -p codecompass-mcp benchmark_t138_get_file_outline_p95_under_50ms -- --ignored --nocapture
+cargo test -p codecompass-mcp benchmark_t457_first_query_p95_under_400ms -- --ignored --nocapture
+cargo test -p codecompass-mcp benchmark_t457_health_endpoint_p95_under_50ms -- --ignored --nocapture
+cargo test -p codecompass-mcp benchmark_t457_workspace_routing_overhead_p95_under_5ms -- --ignored --nocapture
+```
+
+Fixture policy:
+
+- Use `testdata/fixtures/rust-sample` and deterministic synthetic workspaces from
+  the benchmark tests.
+- Keep benchmark fixtures and query packs versioned with spec updates.
+- Treat benchmark thresholds as gate signals; smoke tests remain in default CI for
+  fast regression detection.
 
 ## Regression Policy
 

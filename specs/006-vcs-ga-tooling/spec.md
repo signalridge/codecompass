@@ -20,6 +20,11 @@ It delivers:
 - ref lifecycle helpers (`list_refs`, `switch_ref`)
 - portable state export/import and overlay maintenance commands
 
+## Readiness Baseline Update (2026-02-25)
+
+- `symbol_edges` now has composite forward/reverse type indexes and query-shape
+  regression tests to support low-latency `find_references`/graph traversals.
+
 ## User Scenarios & Testing
 
 ### User Story 1 - Diff Context for PR Review (Priority: P1)

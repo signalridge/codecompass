@@ -29,7 +29,7 @@ pub(super) fn handle_locate_symbol(params: QueryToolParams<'_>) -> JsonRpcRespon
     if name.trim().is_empty() {
         return tool_error_response(
             id,
-            "invalid_input",
+            ProtocolErrorCode::InvalidInput,
             "Parameter `name` is required.",
             None,
             base_metadata,
@@ -39,7 +39,13 @@ pub(super) fn handle_locate_symbol(params: QueryToolParams<'_>) -> JsonRpcRespon
     let ranking_explain_level = match resolve_ranking_explain_level(arguments, config) {
         Ok(level) => level,
         Err(message) => {
-            return tool_error_response(id, "invalid_input", message, None, base_metadata);
+            return tool_error_response(
+                id,
+                ProtocolErrorCode::InvalidInput,
+                message,
+                None,
+                base_metadata,
+            );
         }
     };
 
@@ -182,7 +188,7 @@ pub(super) fn handle_search_code(params: QueryToolParams<'_>) -> JsonRpcResponse
     if query.trim().is_empty() {
         return tool_error_response(
             id,
-            "invalid_input",
+            ProtocolErrorCode::InvalidInput,
             "Parameter `query` is required.",
             None,
             base_metadata,
@@ -192,7 +198,13 @@ pub(super) fn handle_search_code(params: QueryToolParams<'_>) -> JsonRpcResponse
     let ranking_explain_level = match resolve_ranking_explain_level(arguments, config) {
         Ok(level) => level,
         Err(message) => {
-            return tool_error_response(id, "invalid_input", message, None, base_metadata);
+            return tool_error_response(
+                id,
+                ProtocolErrorCode::InvalidInput,
+                message,
+                None,
+                base_metadata,
+            );
         }
     };
 

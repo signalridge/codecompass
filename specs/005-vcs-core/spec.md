@@ -17,6 +17,12 @@ core search tools (`search_code`, `locate_symbol`).
 The goal is to establish deterministic, ref-correct behavior as a standalone
 milestone before layering advanced VCS analysis tools.
 
+## Readiness Baseline Update (2026-02-25)
+
+- Added `VcsAdapter` trait boundary in `codecompass-core::vcs_adapter` with a
+  default Git-backed adapter implementation for FR-410 direction.
+- Added shared `OverlayMergeKey` domain type to avoid ad-hoc tuple/string merge-key drift.
+
 ## User Scenarios & Testing
 
 ### User Story 1 - Git-Diff Incremental Sync (Priority: P1)

@@ -6,6 +6,15 @@
 **Version**: v0.1.0
 **Input**: User description: "Rust workspace bootstrap, Tantivy/SQLite storage engines, tree-sitter parser, symbol indexer, MCP server with locate_symbol and search_code tools"
 
+## Implementation Alignment Update (2026-02-25)
+
+- Runtime protocol error handling now uses centralized typed codes from
+  `codecompass-core::error::ProtocolErrorCode`.
+- Config normalization now canonicalizes `freshness_policy` and
+  `ranking_explain_level` during load.
+- Core typed foundations now include `OverlayMergeKey` for later VCS overlay
+  merge semantics.
+
 ## User Scenarios & Testing
 
 ### User Story 1 - Initialize a Code Project for Indexing (Priority: P1)

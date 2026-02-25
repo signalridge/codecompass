@@ -7,6 +7,11 @@
 **Depends On**: 006-vcs-ga-tooling
 **Input**: User description: "Call edge extraction via tree-sitter, get_call_graph MCP tool, compare_symbol_between_commits tool, suggest_followup_queries tool"
 
+## Readiness Baseline Update (2026-02-25)
+
+- `symbol_edges` forward/reverse typed lookup indexes and query-plan regression
+  tests are now in place to support call-graph traversal latency targets.
+
 ## User Scenarios & Testing
 
 ### User Story 1 - Extract Call Edges from Indexed Code (Priority: P1)

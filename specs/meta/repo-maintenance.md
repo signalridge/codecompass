@@ -145,6 +145,12 @@ Execute in parallel with 001-core-mvp setup. Governance hooks should be in place
 - Fast-fail: invalid PR titles rejected immediately
 ```
 
+Parallel-review requirement:
+
+- PRs touching high-conflict modules (`mcp/server`, `state/schema`, `core/config`)
+  MUST follow `specs/meta/parallel-development-guardrails.md` ownership and
+  boundary guidance.
+
 ### Pre-commit Configuration
 
 ```yaml

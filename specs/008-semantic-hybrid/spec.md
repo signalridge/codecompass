@@ -23,6 +23,12 @@
   - Track A (minimal): lexical-first + optional external/local rerank + confidence guidance.
   - Track B (optional): vector hybrid (embedded vector index + embeddings) only when Track A quality is insufficient.
 
+## Readiness Baseline Update (2026-02-25)
+
+- Config now includes a typed semantic sub-structure (`search.semantic`) with
+  canonical normalization for `semantic_mode` and profile selection, while keeping
+  legacy-compatible parsing behavior.
+
 ## User Scenarios & Testing
 
 ### User Story 1 - Semantic Search for Natural Language Queries (Priority: P1)

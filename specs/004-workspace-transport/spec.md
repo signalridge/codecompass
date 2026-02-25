@@ -8,6 +8,17 @@
 **Depends On**: 003-structure-nav
 **Input**: `specs/meta/design.md` sections 10.7 (Multi-workspace auto-discovery), 10.9 (MCP health/readiness), 10.10 (Index progress notifications), and HTTP transport design
 
+## Implementation Alignment Update (2026-02-25)
+
+- `stdio` and HTTP now route through a shared transport-agnostic dispatch execution
+  pipeline (`execute_transport_request`).
+- Health aggregation logic is shared by `GET /health` and `health_check` through
+  a common core payload builder, while preserving endpoint-specific envelopes.
+- Runtime SQLite access now uses a lightweight `ConnectionManager` abstraction for
+  lazy open/reuse/invalidate semantics across transports.
+- `index_repo/sync_repo` and auto-bootstrap use a unified index process launcher
+  with deterministic binary resolution and env propagation.
+
 ## User Scenarios & Testing
 
 ### User Story 1 - Multi-Workspace Search via MCP (Priority: P1)

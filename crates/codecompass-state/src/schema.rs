@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use tracing::info;
 
 /// Current schema version. Bump this when adding a new migration step.
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 /// Create all required SQLite tables per data-model.md and run any pending migrations.
 pub fn create_tables(conn: &Connection) -> Result<(), StateError> {
@@ -62,6 +62,17 @@ pub fn migrate(conn: &Connection) -> Result<(), StateError> {
                 )
                 .map_err(StateError::sqlite)?;
             }
+            Ok(())
+        },
+        // V3: add symbol_edges composite indexes for forward/reverse graph traversals.
+        |conn| {
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_symbol_edges_from_type
+                     ON symbol_edges(repo, \"ref\", from_symbol_id, edge_type);
+                 CREATE INDEX IF NOT EXISTS idx_symbol_edges_to_type
+                     ON symbol_edges(repo, \"ref\", to_symbol_id, edge_type);",
+            )
+            .map_err(StateError::sqlite)?;
             Ok(())
         },
     ];
@@ -194,6 +205,10 @@ CREATE INDEX IF NOT EXISTS idx_jobs_project_status_created
     ON index_jobs(project_id, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_symbol_edges_to
     ON symbol_edges(repo, "ref", to_symbol_id);
+CREATE INDEX IF NOT EXISTS idx_symbol_edges_from_type
+    ON symbol_edges(repo, "ref", from_symbol_id, edge_type);
+CREATE INDEX IF NOT EXISTS idx_symbol_edges_to_type
+    ON symbol_edges(repo, "ref", to_symbol_id, edge_type);
 
 CREATE TABLE IF NOT EXISTS known_workspaces (
     workspace_path TEXT PRIMARY KEY,

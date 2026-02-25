@@ -1,10 +1,12 @@
 use super::*;
 use codecompass_core::config::Config;
-use codecompass_core::types::{Project, generate_project_id};
+use codecompass_core::types::{Project, WorkspaceConfig, generate_project_id};
 use serde_json::json;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// Default prewarm status for tests (complete).
 fn test_prewarm_status() -> AtomicU8 {
@@ -231,6 +233,143 @@ fn t065_tools_list_returns_all_registered_tools() {
             "inputSchema should be an object: {tool:?}"
         );
     }
+}
+
+fn build_dispatch_runtime_fixture(
+    tmp: &tempfile::TempDir,
+) -> (
+    Config,
+    std::path::PathBuf,
+    String,
+    std::path::PathBuf,
+    WorkspaceRouter,
+    AtomicU8,
+    Instant,
+) {
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).expect("create workspace");
+    let mut config = Config::default();
+    config.storage.data_dir = tmp.path().join("cc-data").to_string_lossy().to_string();
+    let project_id = generate_project_id(&workspace.to_string_lossy());
+    let data_dir = config.project_data_dir(&project_id);
+    let db_path = data_dir.join(codecompass_core::constants::STATE_DB_FILE);
+    let router = WorkspaceRouter::new(WorkspaceConfig::default(), workspace.clone(), db_path)
+        .expect("create workspace router");
+    (
+        config,
+        workspace,
+        project_id,
+        data_dir,
+        router,
+        test_prewarm_status(),
+        test_server_start(),
+    )
+}
+
+#[test]
+fn t462_transport_contexts_produce_same_tools_list_semantics() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (config, workspace, project_id, data_dir, router, prewarm_status, server_start) =
+        build_dispatch_runtime_fixture(&tmp);
+    let request = make_request("tools/list", json!({}));
+    let connection_manager = ConnectionManager::new();
+    let runtime = DispatchRuntime {
+        config: &config,
+        router: &router,
+        workspace: &workspace,
+        project_id: &project_id,
+        data_dir: &data_dir,
+        connection_manager: &connection_manager,
+        prewarm_status: &prewarm_status,
+        server_start: &server_start,
+    };
+    let stdio_transport = TransportExecutionContext {
+        notifier: Arc::new(NullProgressNotifier),
+        progress_token: None,
+        transport_label: "stdio-test",
+        log_workspace_resolution_failures: false,
+        log_degraded_sqlite_open: false,
+    };
+    let http_transport = TransportExecutionContext {
+        notifier: Arc::new(NullProgressNotifier),
+        progress_token: None,
+        transport_label: "http-test",
+        log_workspace_resolution_failures: false,
+        log_degraded_sqlite_open: false,
+    };
+
+    let stdio_response = execute_transport_request(&request, &runtime, &stdio_transport);
+    let http_response = execute_transport_request(&request, &runtime, &http_transport);
+    assert_eq!(
+        serde_json::to_value(&stdio_response).expect("serialize stdio response"),
+        serde_json::to_value(&http_response).expect("serialize http response"),
+        "tools/list semantics must remain transport-context invariant"
+    );
+}
+
+#[test]
+fn t463_transport_contexts_match_for_validation_and_compatibility_errors() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (config, workspace, project_id, data_dir, router, prewarm_status, server_start) =
+        build_dispatch_runtime_fixture(&tmp);
+    let connection_manager = ConnectionManager::new();
+    let runtime = DispatchRuntime {
+        config: &config,
+        router: &router,
+        workspace: &workspace,
+        project_id: &project_id,
+        data_dir: &data_dir,
+        connection_manager: &connection_manager,
+        prewarm_status: &prewarm_status,
+        server_start: &server_start,
+    };
+    let stdio_transport = TransportExecutionContext {
+        notifier: Arc::new(NullProgressNotifier),
+        progress_token: None,
+        transport_label: "stdio-test",
+        log_workspace_resolution_failures: false,
+        log_degraded_sqlite_open: false,
+    };
+    let http_transport = TransportExecutionContext {
+        notifier: Arc::new(NullProgressNotifier),
+        progress_token: None,
+        transport_label: "http-test",
+        log_workspace_resolution_failures: false,
+        log_degraded_sqlite_open: false,
+    };
+
+    let validation_request = make_request(
+        "tools/call",
+        json!({
+            "name": "locate_symbol",
+            "arguments": {}
+        }),
+    );
+    let validation_stdio =
+        execute_transport_request(&validation_request, &runtime, &stdio_transport);
+    let validation_http = execute_transport_request(&validation_request, &runtime, &http_transport);
+    assert_eq!(
+        serde_json::to_value(&validation_stdio).expect("serialize validation stdio response"),
+        serde_json::to_value(&validation_http).expect("serialize validation http response"),
+        "validation error envelope should be transport-context invariant"
+    );
+
+    let compatibility_request = make_request(
+        "tools/call",
+        json!({
+            "name": "search_code",
+            "arguments": { "query": "validate_token" }
+        }),
+    );
+    let compatibility_stdio =
+        execute_transport_request(&compatibility_request, &runtime, &stdio_transport);
+    let compatibility_http =
+        execute_transport_request(&compatibility_request, &runtime, &http_transport);
+    assert_eq!(
+        serde_json::to_value(&compatibility_stdio).expect("serialize compatibility stdio response"),
+        serde_json::to_value(&compatibility_http).expect("serialize compatibility http response"),
+        "compatibility error envelope should be transport-context invariant"
+    );
 }
 
 // ------------------------------------------------------------------
@@ -3470,11 +3609,11 @@ fn t139_backward_compatibility_default_detail_level() {
 }
 
 // ------------------------------------------------------------------
-// T138: Performance benchmark
+// T138: Performance smoke guard (strict p95 thresholds moved to benchmark harness)
 // ------------------------------------------------------------------
 
 #[test]
-fn t138_performance_benchmark() {
+fn t138_performance_smoke_guard() {
     let tmp = tempfile::tempdir().unwrap();
     let index_set = build_fixture_index(tmp.path());
 
@@ -3485,7 +3624,7 @@ fn t138_performance_benchmark() {
     let workspace = Path::new("/tmp/fake-workspace");
     let project_id = "test-repo";
 
-    // Benchmark get_file_outline: measure 10 iterations, verify p95 < 50ms
+    // Smoke: repeated get_file_outline calls should remain responsive.
     let mut outline_times = Vec::new();
     for _ in 0..10 {
         let request = make_request(
@@ -3519,10 +3658,10 @@ fn t138_performance_benchmark() {
         assert!(response.error.is_none(), "get_file_outline should succeed");
     }
     outline_times.sort();
-    let p95_outline = outline_times[8]; // 95th percentile of 10 samples
+    let p95_outline = outline_times[8];
     assert!(
-        p95_outline.as_millis() < 50,
-        "get_file_outline p95 should be < 50ms, got {}ms",
+        p95_outline.as_millis() < 5_000,
+        "get_file_outline smoke budget should remain < 5000ms, got {}ms",
         p95_outline.as_millis()
     );
 
@@ -3556,9 +3695,61 @@ fn t138_performance_benchmark() {
     let elapsed = start.elapsed();
     assert!(response.error.is_none(), "search_code should succeed");
     assert!(
-        elapsed.as_millis() < 500,
-        "first-query latency should be < 500ms, got {}ms",
+        elapsed.as_millis() < 5_000,
+        "first-query smoke budget should remain < 5000ms, got {}ms",
         elapsed.as_millis()
+    );
+}
+
+#[test]
+#[ignore = "benchmark harness"]
+fn benchmark_t138_get_file_outline_p95_under_50ms() {
+    let tmp = tempfile::tempdir().unwrap();
+    let index_set = build_fixture_index(tmp.path());
+
+    let db_path = tmp.path().join("data/state.db");
+    let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+    let config = Config::default();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let mut outline_times = Vec::new();
+    for _ in 0..10 {
+        let request = make_request(
+            "tools/call",
+            json!({
+                "name": "get_file_outline",
+                "arguments": {
+                    "path": "src/auth.rs"
+                }
+            }),
+        );
+        let start = std::time::Instant::now();
+        let response = handle_request_with_ctx(
+            &request,
+            &RequestContext {
+                config: &config,
+                index_set: Some(&index_set),
+                schema_status: SchemaStatus::Compatible,
+                compatibility_reason: None,
+                conn: Some(&conn),
+                workspace,
+                project_id,
+                prewarm_status: &test_prewarm_status(),
+                server_start: &test_server_start(),
+                notifier: Arc::new(NullProgressNotifier),
+                progress_token: None,
+            },
+        );
+        assert!(response.error.is_none(), "get_file_outline should succeed");
+        outline_times.push(start.elapsed());
+    }
+    outline_times.sort();
+    let p95_outline = outline_times[8];
+    assert!(
+        p95_outline.as_millis() < 50,
+        "get_file_outline benchmark p95 should be < 50ms, got {}ms",
+        p95_outline.as_millis()
     );
 }
 
@@ -4160,6 +4351,306 @@ fn t220_index_repo_without_notifications_uses_index_status_progress_fields() {
 }
 
 // ------------------------------------------------------------------
+// T464: index launcher honors override binary and required env propagation
+// ------------------------------------------------------------------
+
+#[cfg(unix)]
+#[test]
+fn t464_index_launcher_override_binary_and_env_propagation() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let (config, conn, project_id) = setup_indexing_runtime(&workspace);
+
+    let capture_dir = tmp.path().join("capture");
+    std::fs::create_dir_all(&capture_dir).unwrap();
+    let script_path = tmp.path().join("mock-indexer.sh");
+    let script = format!(
+        "#!/bin/sh\nprintf '%s' \"$CODECOMPASS_PROJECT_ID\" > \"{}\"\nprintf '%s' \"$CODECOMPASS_STORAGE_DATA_DIR\" > \"{}\"\nprintf '%s' \"$CODECOMPASS_JOB_ID\" > \"{}\"\n",
+        capture_dir.join("project_id.txt").display(),
+        capture_dir.join("storage_dir.txt").display(),
+        capture_dir.join("job_id.txt").display(),
+    );
+    std::fs::write(&script_path, script).unwrap();
+    let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&script_path, perms).unwrap();
+
+    unsafe {
+        std::env::set_var("CODECOMPASS_INDEX_BIN", &script_path);
+    }
+
+    let request = make_request(
+        "tools/call",
+        json!({
+            "name": "index_repo",
+            "arguments": { "force": false }
+        }),
+    );
+    let response = handle_request_with_ctx(
+        &request,
+        &RequestContext {
+            config: &config,
+            index_set: None,
+            schema_status: SchemaStatus::NotIndexed,
+            compatibility_reason: None,
+            conn: Some(&conn),
+            workspace: &workspace,
+            project_id: &project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+
+    unsafe {
+        std::env::remove_var("CODECOMPASS_INDEX_BIN");
+    }
+
+    assert!(
+        response.error.is_none(),
+        "index_repo should spawn override binary"
+    );
+    let payload = extract_payload_from_response(&response);
+    assert!(
+        payload
+            .get("progress_token")
+            .and_then(|v| v.as_str())
+            .is_some_and(|token| token.starts_with("index-job-")),
+        "index_repo should return server-generated progress_token"
+    );
+
+    for _ in 0..80 {
+        let job_path = capture_dir.join("job_id.txt");
+        if job_path.exists()
+            && std::fs::metadata(&job_path)
+                .map(|m| m.len() > 0)
+                .unwrap_or(false)
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    let captured_project_id = std::fs::read_to_string(capture_dir.join("project_id.txt"))
+        .expect("override launcher should capture CODECOMPASS_PROJECT_ID");
+    let captured_storage_dir = std::fs::read_to_string(capture_dir.join("storage_dir.txt"))
+        .expect("override launcher should capture CODECOMPASS_STORAGE_DATA_DIR");
+    let captured_job_id = std::fs::read_to_string(capture_dir.join("job_id.txt"))
+        .expect("override launcher should capture CODECOMPASS_JOB_ID");
+
+    assert_eq!(captured_project_id, project_id);
+    assert_eq!(captured_storage_dir, config.storage.data_dir);
+    assert!(
+        !captured_job_id.trim().is_empty(),
+        "captured job id should be non-empty"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn t466_bootstrap_launcher_override_binary_and_env_propagation() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().join("workspace-bootstrap");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let project_id = generate_project_id(&workspace.to_string_lossy());
+    let data_dir = tmp.path().join("cc-data").join("data").join(&project_id);
+    let storage_data_dir = tmp.path().join("cc-data");
+    let storage_data_dir_str = storage_data_dir.to_string_lossy().to_string();
+
+    let capture_dir = tmp.path().join("capture-bootstrap");
+    std::fs::create_dir_all(&capture_dir).unwrap();
+    let script_path = tmp.path().join("mock-bootstrap-indexer.sh");
+    let script = format!(
+        "#!/bin/sh\nprintf '%s' \"$CODECOMPASS_PROJECT_ID\" > \"{}\"\nprintf '%s' \"$CODECOMPASS_STORAGE_DATA_DIR\" > \"{}\"\nprintf '%s' \"$CODECOMPASS_JOB_ID\" > \"{}\"\n",
+        capture_dir.join("project_id.txt").display(),
+        capture_dir.join("storage_dir.txt").display(),
+        capture_dir.join("job_id.txt").display(),
+    );
+    std::fs::write(&script_path, script).unwrap();
+    let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&script_path, perms).unwrap();
+
+    unsafe {
+        std::env::set_var("CODECOMPASS_INDEX_BIN", &script_path);
+    }
+
+    let result = bootstrap_and_index(&workspace, &project_id, &data_dir, &storage_data_dir_str);
+
+    unsafe {
+        std::env::remove_var("CODECOMPASS_INDEX_BIN");
+    }
+
+    assert!(
+        result.is_ok(),
+        "bootstrap launcher should use override binary"
+    );
+
+    for _ in 0..80 {
+        let job_path = capture_dir.join("job_id.txt");
+        if job_path.exists()
+            && std::fs::metadata(&job_path)
+                .map(|m| m.len() > 0)
+                .unwrap_or(false)
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    let captured_project_id = std::fs::read_to_string(capture_dir.join("project_id.txt"))
+        .expect("bootstrap launcher should capture CODECOMPASS_PROJECT_ID");
+    let captured_storage_dir = std::fs::read_to_string(capture_dir.join("storage_dir.txt"))
+        .expect("bootstrap launcher should capture CODECOMPASS_STORAGE_DATA_DIR");
+    let captured_job_id = std::fs::read_to_string(capture_dir.join("job_id.txt"))
+        .expect("bootstrap launcher should capture CODECOMPASS_JOB_ID");
+
+    assert_eq!(captured_project_id, project_id);
+    assert_eq!(captured_storage_dir, storage_data_dir_str);
+    assert!(
+        !captured_job_id.trim().is_empty(),
+        "captured bootstrap job id should be non-empty"
+    );
+}
+
+#[test]
+fn t467_connection_manager_reopens_after_failure_and_invalidate() {
+    let tmp = tempfile::tempdir().unwrap();
+    let blocking_parent = tmp.path().join("nested");
+    std::fs::write(&blocking_parent, "blocking").unwrap();
+    let db_path = blocking_parent.join("state.db");
+    let manager = ConnectionManager::new();
+
+    assert!(
+        manager.get_or_open(&db_path).is_err(),
+        "opening when parent path is a file should fail"
+    );
+
+    std::fs::remove_file(&blocking_parent).unwrap();
+    std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+    let first = manager
+        .get_or_open(&db_path)
+        .expect("open sqlite after setup");
+    {
+        let conn = first.lock().expect("lock sqlite");
+        codecompass_state::schema::create_tables(&conn).unwrap();
+    }
+
+    manager.invalidate(&db_path);
+    let second = manager
+        .get_or_open(&db_path)
+        .expect("re-open sqlite after invalidate");
+    let conn = second.lock().expect("lock re-opened sqlite");
+    let one: i64 = conn.query_row("SELECT 1", [], |row| row.get(0)).unwrap();
+    assert_eq!(one, 1);
+}
+
+// ------------------------------------------------------------------
+// T465: canonical error envelope + metadata enum snapshots
+// ------------------------------------------------------------------
+
+#[test]
+fn t465_protocol_error_envelope_and_metadata_enum_snapshots() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let config = Config::default();
+    let project_id = generate_project_id(&workspace.to_string_lossy());
+
+    let validation_request = make_request(
+        "tools/call",
+        json!({
+            "name": "locate_symbol",
+            "arguments": {}
+        }),
+    );
+    let validation_response = handle_request_with_ctx(
+        &validation_request,
+        &RequestContext {
+            config: &config,
+            index_set: None,
+            schema_status: SchemaStatus::Compatible,
+            compatibility_reason: None,
+            conn: None,
+            workspace: &workspace,
+            project_id: &project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+    let validation_payload = extract_payload_from_response(&validation_response);
+    assert_eq!(
+        validation_payload.get("error").and_then(|v| v.get("code")),
+        Some(&json!("invalid_input"))
+    );
+    assert_eq!(
+        validation_payload
+            .get("metadata")
+            .and_then(|v| v.get("indexing_status")),
+        Some(&json!("ready"))
+    );
+    assert_eq!(
+        validation_payload
+            .get("metadata")
+            .and_then(|v| v.get("result_completeness")),
+        Some(&json!("complete"))
+    );
+
+    let compatibility_request = make_request(
+        "tools/call",
+        json!({
+            "name": "search_code",
+            "arguments": { "query": "foo" }
+        }),
+    );
+    let compatibility_response = handle_request_with_ctx(
+        &compatibility_request,
+        &RequestContext {
+            config: &config,
+            index_set: None,
+            schema_status: SchemaStatus::NotIndexed,
+            compatibility_reason: Some("No index found"),
+            conn: None,
+            workspace: &workspace,
+            project_id: &project_id,
+            prewarm_status: &test_prewarm_status(),
+            server_start: &test_server_start(),
+            notifier: Arc::new(NullProgressNotifier),
+            progress_token: None,
+        },
+    );
+    let compatibility_payload = extract_payload_from_response(&compatibility_response);
+    assert_eq!(
+        compatibility_payload
+            .get("error")
+            .and_then(|v| v.get("code")),
+        Some(&json!("project_not_found"))
+    );
+    assert_eq!(
+        compatibility_payload
+            .get("metadata")
+            .and_then(|v| v.get("indexing_status")),
+        Some(&json!("not_indexed"))
+    );
+    assert_eq!(
+        compatibility_payload
+            .get("metadata")
+            .and_then(|v| v.get("result_completeness")),
+        Some(&json!("partial"))
+    );
+}
+
+// ------------------------------------------------------------------
 // T456: restart recovery report + warmset visibility in health_check
 // ------------------------------------------------------------------
 
@@ -4282,11 +4773,61 @@ fn t456_health_check_surfaces_interrupted_recovery_and_warmset_members() {
 }
 
 // ------------------------------------------------------------------
-// T457: warmset-enabled first-query p95 target
+// T457: warmset-enabled first-query smoke guard
 // ------------------------------------------------------------------
 
 #[test]
-fn t457_first_query_p95_under_400ms() {
+fn t457_first_query_smoke_guard() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (index_set, db_path) = build_fixture_index_with_db(tmp.path());
+    let conn = codecompass_state::db::open_connection(&db_path).unwrap();
+    let config = Config::default();
+    let workspace = Path::new("/tmp/fake-workspace");
+    let project_id = "test-repo";
+
+    let mut samples = Vec::new();
+    for _ in 0..12 {
+        let request = make_request(
+            "tools/call",
+            json!({
+                "name": "search_code",
+                "arguments": {
+                    "query": "validate_token"
+                }
+            }),
+        );
+        let started = Instant::now();
+        let response = handle_request_with_ctx(
+            &request,
+            &RequestContext {
+                config: &config,
+                index_set: Some(&index_set),
+                schema_status: SchemaStatus::Compatible,
+                compatibility_reason: None,
+                conn: Some(&conn),
+                workspace,
+                project_id,
+                prewarm_status: &test_prewarm_status(),
+                server_start: &test_server_start(),
+                notifier: Arc::new(NullProgressNotifier),
+                progress_token: None,
+            },
+        );
+        assert!(response.error.is_none(), "search_code should succeed");
+        samples.push(started.elapsed());
+    }
+    samples.sort();
+    let p95 = samples[samples.len() * 95 / 100];
+    assert!(
+        p95.as_millis() < 5_000,
+        "warmset-enabled first-query smoke budget should remain < 5000ms, got {}ms",
+        p95.as_millis()
+    );
+}
+
+#[test]
+#[ignore = "benchmark harness"]
+fn benchmark_t457_first_query_p95_under_400ms() {
     let tmp = tempfile::tempdir().unwrap();
     let (index_set, db_path) = build_fixture_index_with_db(tmp.path());
     let conn = codecompass_state::db::open_connection(&db_path).unwrap();
@@ -4329,7 +4870,7 @@ fn t457_first_query_p95_under_400ms() {
     let p95 = samples[samples.len() * 95 / 100];
     assert!(
         p95.as_millis() < 400,
-        "warmset-enabled first-query p95 should be < 400ms, got {}ms",
+        "warmset-enabled first-query benchmark p95 should be < 400ms, got {}ms",
         p95.as_millis()
     );
 }

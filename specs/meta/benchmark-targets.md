@@ -92,6 +92,15 @@ migrated_from: plan/verify/benchmark-targets.md
 - Sync speed: fixture branch operations with fixed change sets
 - Resource usage: `doctor --stats` + CI sampling
 
+Benchmark harness invocation:
+
+```bash
+scripts/benchmarks/run_mcp_benchmarks.sh
+```
+
+Default CI `cargo test --workspace` keeps smoke-level latency checks only; strict
+p95 assertions run through the benchmark harness entry points above.
+
 ## Regression Policy
 
 - Latency regression > 20% on benchmark suite blocks merge
