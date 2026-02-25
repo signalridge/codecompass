@@ -166,10 +166,11 @@ pub fn ensure_no_active_sync_for_ref(
     ref_name: &str,
 ) -> Result<(), StateError> {
     if let Some(active) = jobs::get_active_job_for_ref(conn, project_id, ref_name)? {
-        return Err(StateError::Sqlite(format!(
-            "sync_in_progress: project_id={project_id}, ref={ref_name}, job_id={}",
-            active.job_id
-        )));
+        return Err(StateError::sync_in_progress(
+            project_id,
+            ref_name,
+            active.job_id,
+        ));
     }
     Ok(())
 }
@@ -906,7 +907,7 @@ mod tests {
 
         let err = ensure_no_active_sync_for_ref(&conn, "proj-1", "feat/auth").unwrap_err();
         assert!(
-            err.to_string().contains("sync_in_progress"),
+            matches!(err, StateError::SyncInProgress { .. }),
             "unexpected error: {err}"
         );
 

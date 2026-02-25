@@ -322,27 +322,44 @@ pub(super) fn deterministic_locate_suggested_actions(
 
 pub(super) fn map_state_error(err: &StateError) -> (ProtocolErrorCode, String, Option<Value>) {
     match err {
-        StateError::Sqlite(msg) if msg.starts_with("sync_in_progress:") => (
+        StateError::SyncInProgress {
+            project_id,
+            ref_name,
+            job_id,
+        } => (
             ProtocolErrorCode::SyncInProgress,
             "A sync job is already active for this project/ref.".to_string(),
             Some(json!({
-                "details": msg,
+                "details": format!(
+                    "sync_in_progress: project_id={project_id}, ref={ref_name}, job_id={job_id}"
+                ),
                 "remediation": "Poll index_status and retry sync_repo after the active sync completes.",
             })),
         ),
-        StateError::Sqlite(msg) if msg.starts_with("ref_not_indexed:") => (
+        StateError::RefNotIndexed {
+            project_id,
+            ref_name,
+        } => (
             ProtocolErrorCode::RefNotIndexed,
             "The requested ref has no indexed state yet.".to_string(),
             Some(json!({
-                "details": msg,
+                "details": format!(
+                    "ref_not_indexed: project_id={project_id}, ref={ref_name}"
+                ),
                 "remediation": "Run sync_repo for this ref before querying.",
             })),
         ),
-        StateError::Sqlite(msg) if msg.starts_with("overlay_not_ready:") => (
+        StateError::OverlayNotReady {
+            project_id,
+            ref_name,
+            reason,
+        } => (
             ProtocolErrorCode::OverlayNotReady,
             "The requested ref overlay is not query-ready yet.".to_string(),
             Some(json!({
-                "details": msg,
+                "details": format!(
+                    "overlay_not_ready: project_id={project_id}, ref={ref_name}, {reason}"
+                ),
                 "remediation": "Poll index_status until indexing finishes, then retry.",
             })),
         ),

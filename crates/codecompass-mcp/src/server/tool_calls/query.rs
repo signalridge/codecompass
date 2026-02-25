@@ -1,6 +1,7 @@
 use super::*;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use tracing::warn;
 
 struct VcsOverlayContext {
     default_ref: String,
@@ -14,29 +15,6 @@ struct QueryExecutionContext<'a> {
     config: &'a Config,
     project_id: &'a str,
     effective_ref: &'a str,
-}
-
-fn resolve_overlay_dir(
-    conn: &rusqlite::Connection,
-    data_dir: &Path,
-    project_id: &str,
-    ref_name: &str,
-) -> PathBuf {
-    let from_branch_state =
-        codecompass_state::branch_state::get_branch_state(conn, project_id, ref_name)
-            .ok()
-            .flatten()
-            .and_then(|state| state.overlay_dir)
-            .map(PathBuf::from);
-
-    if let Some(path) = from_branch_state {
-        if path.is_absolute() {
-            return path;
-        }
-        return data_dir.join(path);
-    }
-
-    codecompass_indexer::overlay::overlay_dir_for_ref(data_dir, ref_name)
 }
 
 fn resolve_vcs_overlay_context(
@@ -59,19 +37,18 @@ fn resolve_vcs_overlay_context(
     let Some(branch_state) =
         codecompass_state::branch_state::get_branch_state(conn, project_id, effective_ref)?
     else {
-        return Err(StateError::Sqlite(format!(
-            "ref_not_indexed: project_id={project_id}, ref={effective_ref}"
-        )));
+        return Err(StateError::ref_not_indexed(project_id, effective_ref));
     };
 
     if matches!(
         branch_state.status.as_str(),
         "syncing" | "rebuilding" | "indexing"
     ) {
-        return Err(StateError::Sqlite(format!(
-            "overlay_not_ready: project_id={project_id}, ref={effective_ref}, status={}",
-            branch_state.status
-        )));
+        return Err(StateError::overlay_not_ready(
+            project_id,
+            effective_ref,
+            format!("status={}", branch_state.status),
+        ));
     }
 
     let data_dir = config.project_data_dir(project_id);
@@ -79,22 +56,27 @@ fn resolve_vcs_overlay_context(
         .overlay_dir
         .map(PathBuf::from)
         .map(|p| if p.is_absolute() { p } else { data_dir.join(p) })
-        .unwrap_or_else(|| resolve_overlay_dir(conn, &data_dir, project_id, effective_ref));
-    let overlay_index_set = codecompass_state::tantivy_index::IndexSet::open_existing_at(
-        &overlay_dir,
-    )
-    .map_err(|err| {
-        StateError::Sqlite(format!(
-            "overlay_not_ready: project_id={project_id}, ref={effective_ref}, error={err}"
-        ))
-    })?;
+        .unwrap_or_else(|| {
+            codecompass_indexer::overlay::overlay_dir_for_ref(&data_dir, effective_ref)
+        });
+    let overlay_index_set =
+        codecompass_state::tantivy_index::IndexSet::open_existing_at(&overlay_dir).map_err(
+            |err| StateError::overlay_not_ready(project_id, effective_ref, format!("error={err}")),
+        )?;
 
     let mut tombstone_cache = TombstoneCache::new(Some(conn));
-    let tombstones = tombstone_cache
-        .load_paths(project_id, effective_ref)
-        .ok()
-        .cloned()
-        .unwrap_or_default();
+    let tombstones = match tombstone_cache.load_paths(project_id, effective_ref) {
+        Ok(paths) => paths.clone(),
+        Err(err) => {
+            warn!(
+                project_id = %project_id,
+                ref_name = %effective_ref,
+                error = %err,
+                "Failed to load tombstones; continuing without suppression"
+            );
+            HashSet::new()
+        }
+    };
 
     Ok(Some(VcsOverlayContext {
         default_ref: project.default_ref,

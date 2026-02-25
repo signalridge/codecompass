@@ -54,10 +54,11 @@ pub fn create_job(conn: &Connection, job: &IndexJob) -> Result<(), StateError> {
             if err.code == ErrorCode::ConstraintViolation =>
         {
             if let Some(active) = get_active_job_for_ref(conn, &job.project_id, &job.r#ref)? {
-                return Err(StateError::Sqlite(format!(
-                    "sync_in_progress: project_id={}, ref={}, job_id={}",
-                    job.project_id, job.r#ref, active.job_id
-                )));
+                return Err(StateError::sync_in_progress(
+                    &job.project_id,
+                    &job.r#ref,
+                    active.job_id,
+                ));
             }
             Err(StateError::Sqlite(
                 "index_jobs constraint violation while creating job".to_string(),
@@ -395,7 +396,7 @@ mod tests {
 
         let err = create_job(&conn, &second).unwrap_err();
         assert!(
-            err.to_string().contains("sync_in_progress"),
+            matches!(err, StateError::SyncInProgress { .. }),
             "unexpected error: {err}"
         );
     }
