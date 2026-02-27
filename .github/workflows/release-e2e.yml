@@ -209,6 +209,15 @@ jobs:
           end
           RUBY
 
+          (
+            cd "${TAP_DIR}"
+            git init -q
+            git config user.name ci
+            git config user.email ci@example.com
+            git add Formula/codecompass.rb
+            git commit -q -m "Add codecompass formula for ${TAG}"
+          )
+
       - name: Homebrew audit and install verification
         run: |
           set -euo pipefail
