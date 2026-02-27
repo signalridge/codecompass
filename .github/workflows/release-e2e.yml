@@ -99,7 +99,11 @@ jobs:
       - name: Windows E2E
         shell: pwsh
         run: |
-          $bin = Join-Path $pwd 'artifacts\codecompass-x86_64-pc-windows-msvc\codecompass.exe'
+          $bin = (Get-ChildItem -Path artifacts -Recurse -Filter codecompass.exe | Select-Object -First 1).FullName
+          if (-not $bin) {
+            Write-Error "codecompass.exe not found in extracted release artifact"
+            exit 1
+          }
           & $bin --version
 
           New-Item -ItemType Directory -Path sample\src -Force | Out-Null
@@ -125,6 +129,8 @@ jobs:
     env:
       TAG: ${{ github.ref_name }}
     steps:
+      - uses: actions/checkout@v4
+
       - name: Wait for release publication
         env:
           GH_TOKEN: ${{ github.token }}
@@ -140,7 +146,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mkdir -p tap/Formula
+          TAP_DIR="${RUNNER_TEMP}/codecompass-tap"
+          mkdir -p "${TAP_DIR}/Formula"
+          echo "TAP_DIR=${TAP_DIR}" >> "$GITHUB_ENV"
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets > assets.json
 
           pick_name() {
@@ -163,7 +171,7 @@ jobs:
           linux_arm_sha="$(pick_sha "$linux_arm")"
           linux_x86_sha="$(pick_sha "$linux_x86")"
 
-          cat > tap/Formula/codecompass.rb <<RUBY
+          cat > "${TAP_DIR}/Formula/codecompass.rb" <<RUBY
           class Codecompass < Formula
             desc "Code search and navigation engine for AI coding assistants"
             homepage "https://github.com/signalridge/codecompass"
@@ -205,7 +213,7 @@ jobs:
         run: |
           set -euo pipefail
           brew untap signalridge/tap >/dev/null 2>&1 || true
-          brew tap --custom-remote signalridge/tap "$PWD/tap"
+          brew tap --custom-remote signalridge/tap "$TAP_DIR"
           brew audit --strict signalridge/tap/codecompass
           brew install --build-from-source signalridge/tap/codecompass
           codecompass --version
