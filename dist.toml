@@ -1,6 +1,7 @@
 [dist]
 # Keep this in sync with the release workflow install step.
 cargo-dist-version = "0.30.0"
+allow-dirty = ["ci"]
 ci = ["github"]
 installers = []
 # Linux targets use musl for static linking.
