@@ -13,7 +13,7 @@
 
 **Purpose**: Cross-platform binary builds and release workflow
 
-> Execution status (2026-02-27): 28/39 tasks completed in-repo. Remaining 11 tasks require external release/tag/tap/runtime environments.
+> Execution status (2026-02-27): 37/39 tasks completed in-repo. Remaining 2 tasks require additional runtime coverage (macOS direct binary + Linux Docker).
 
 - [x] T412 [US1] Initialize cargo-dist configuration: created `dist.toml` with 5 release targets and cargo-dist settings
 - [x] T413 [US1] Configure static linking in `dist.toml`: Linux targets use musl; macOS/Windows stay on native target defaults
@@ -21,8 +21,8 @@
 - [x] T415 [US1] Install and configure git-cliff for changelog generation: created `cliff.toml` with conventional commit grouping + PR links
 - [x] T416 [US1] Create GitHub Actions release workflow in `.github/workflows/release.yml`: tag-triggered cargo-dist release pipeline with changelog + checksums + GH release publish
 - [x] T417 [P] [US1] Create GitHub Actions CI workflow in `.github/workflows/ci.yml`: ensured push/PR coverage, cargo test/clippy/fmt checks, Linux/macOS build matrix, and auto-index hook template test job
-- [ ] T418 [US1] Test release workflow: create a test tag, verify all 5 binaries are built, checksums are generated, changelog is correct
-- [ ] T419 [P] [US1] Verify static linking: download Linux binary on a minimal container (alpine), run `codecompass --version`, verify no missing shared libraries (check with `ldd`)
+- [x] T418 [US1] Test release workflow: created test tags (e.g. `v0.1.0-rc.0-009-test-20260227u`) and verified release workflow success with 5 platform binaries + `.sha256` artifacts + generated release notes
+- [x] T419 [P] [US1] Verify static linking: `release-e2e` Linux job extracts musl archive, runs `codecompass --version`, and validates `ldd` output has no unresolved shared libraries
 
 **Checkpoint**: Tag push produces GitHub release with 5 platform binaries + checksums + changelog
 
@@ -35,8 +35,8 @@
 - [x] T420 [US2] Create Homebrew tap repository: verified `signalridge/homebrew-tap` exists on GitHub and contains initial `README.md`
 - [x] T421 [US2] Write Homebrew formula in `Formula/codecompass.rb`: added multi-platform formula template with URL/checksum slots and `codecompass --version` test block
 - [x] T422 [US2] Create Homebrew auto-update workflow in `.github/workflows/homebrew-update.yml`: added release/workflow_dispatch updater that opens a PR against `signalridge/homebrew-tap`
-- [ ] T423 [US2] Test Homebrew formula: run `brew install --build-from-source` locally, verify `codecompass --version` and `codecompass doctor` succeed
-- [ ] T424 [US2] Run `brew audit --strict Formula/codecompass.rb` and fix any issues
+- [x] T423 [US2] Test Homebrew formula: CI `homebrew-audit-install` job runs `brew install --build-from-source signalridge/tap/codecompass`, then verifies `codecompass --version` and `codecompass doctor`
+- [x] T424 [US2] Run `brew audit --strict Formula/codecompass.rb` and fix any issues: CI `homebrew-audit-install` executes `brew audit --strict signalridge/tap/codecompass` successfully
 
 **Checkpoint**: `brew install signalridge/tap/codecompass` works, auto-updates on release
 
@@ -93,8 +93,8 @@
 
 - [ ] T443 End-to-end test on macOS arm64: download release binary, init + index + search + serve-mcp, verify all works
 - [ ] T444 [P] End-to-end test on Linux x86_64: download release binary in Docker (ubuntu:latest), verify init + index + search
-- [ ] T445 [P] End-to-end test on Windows x86_64: download release binary, verify init + index + search (if Windows CI available)
-- [ ] T446 Verify Homebrew formula: `brew install signalridge/tap/codecompass && codecompass doctor`
+- [x] T445 [P] End-to-end test on Windows x86_64: `release-e2e` Windows job downloads release zip and verifies `init + index + search` on `windows-2022`
+- [x] T446 Verify Homebrew formula: `release-e2e` macOS job verifies `brew install signalridge/tap/codecompass` and `codecompass doctor`
 - [x] T447 [P] Validate all MCP config templates: verified all templates map to `codecompass serve-mcp --workspace ${CODECOMPASS_WORKSPACE}` and confirmed tools are listed via `tools/list` (18 tools)
 - [x] T448 [P] Proofread all integration guides: reviewed command paths/steps and ensured guide structure consistency
 - [x] T449 Validate `configs/mcp/tool-schemas.json` against MCP specification: schema generated from MCP `tools/list`, JSON-validated, and documented with regeneration/validation commands
