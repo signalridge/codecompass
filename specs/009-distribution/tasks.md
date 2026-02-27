@@ -13,7 +13,7 @@
 
 **Purpose**: Cross-platform binary builds and release workflow
 
-> Execution status (2026-02-27): 38/39 tasks completed in-repo. Remaining 1 task requires Linux Docker runtime coverage (`ubuntu:latest` x86_64 container).
+> Execution status (2026-02-27): 39/39 tasks completed in-repo.
 
 - [x] T412 [US1] Initialize cargo-dist configuration: created `dist.toml` with 5 release targets and cargo-dist settings
 - [x] T413 [US1] Configure static linking in `dist.toml`: Linux targets use musl; macOS/Windows stay on native target defaults
@@ -92,7 +92,7 @@
 **Purpose**: End-to-end validation of the full distribution pipeline
 
 - [x] T443 End-to-end test on macOS arm64: downloaded `codecompass-aarch64-apple-darwin.tar.gz`, verified `init + index + search`, and confirmed `serve-mcp` startup log (`MCP server started`)
-- [ ] T444 [P] End-to-end test on Linux x86_64: download release binary in Docker (ubuntu:latest), verify init + index + search
+- [x] T444 [P] End-to-end test on Linux x86_64: validated in `docker run --platform linux/amd64 ubuntu:latest` using release binary `codecompass-x86_64-unknown-linux-musl.tar.gz` with successful `init + index + search`
 - [x] T445 [P] End-to-end test on Windows x86_64: `release-e2e` Windows job downloads release zip and verifies `init + index + search` on `windows-2022`
 - [x] T446 Verify Homebrew formula: `release-e2e` macOS job verifies `brew install signalridge/tap/codecompass` and `codecompass doctor`
 - [x] T447 [P] Validate all MCP config templates: verified all templates map to `codecompass serve-mcp --workspace ${CODECOMPASS_WORKSPACE}` and confirmed tools are listed via `tools/list` (18 tools)
