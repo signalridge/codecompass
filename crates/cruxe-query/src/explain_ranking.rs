@@ -178,7 +178,7 @@ fn component_reason(value: f64, positive: &str, none: &str) -> String {
 }
 
 fn confidence_structural_reason(reason: &cruxe_core::types::RankingReasons) -> String {
-    if reason.confidence_structural_boost.abs() <= f64::EPSILON {
+    if reason.confidence_structural_boost.abs() <= EXPLAIN_SIGNAL_TOLERANCE {
         return "no confidence-weighted structural boost".to_string();
     }
     format!(

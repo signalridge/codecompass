@@ -1,7 +1,8 @@
 # context-pack-builder Specification
 
 ## Purpose
-TBD - created by archiving change context-pack-builder. Update Purpose after archive.
+Define deterministic token-budgeted context-pack assembly with section taxonomy and provenance so coding agents receive minimal-sufficient, auditable context bundles.
+
 ## Requirements
 ### Requirement: System MUST provide budgeted context pack assembly
 The system MUST provide a context-pack assembly capability that builds a structured minimal-sufficient context bundle for agent workflows.
