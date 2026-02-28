@@ -96,8 +96,8 @@ separate avoids a monolithic module.
 2. For each import/use/require node, extract the qualified name of the imported
    symbol.
 3. Resolve the qualified name to a `symbol_stable_id` by querying
-   `symbol_relations` (best-effort: if not found, derive a synthetic stable ID
-   from the qualified name for graph storage).
+   `symbol_relations` (best-effort: if not found, store unresolved edge with
+   `to_symbol_id = NULL` and `to_name = target_name`).
 4. Insert edges into `symbol_edges` with `edge_type='imports'`,
    `confidence='static'`.
 5. Before inserting, delete all existing `imports` edges where `from_symbol_id`
@@ -115,9 +115,9 @@ Import resolution is best-effort within the indexed codebase:
   absolute, then match by name in that file's symbols.
 - **Go**: `import "package/path"` -> match package-level symbols by import path.
 
-External dependencies (not in indexed codebase) produce edges with synthetic
-`to_symbol_id` that do not resolve to `symbol_relations` rows. These are stored
-for completeness but skipped by navigation tools.
+External dependencies (not in indexed codebase) produce unresolved edges with
+`to_symbol_id = NULL` and populated `to_name`. These are stored for completeness
+and can be counted/reporting as unresolved references by navigation tools.
 
 ### Token Estimation
 
