@@ -137,7 +137,8 @@ Now supports optional semantic/hybrid search for natural language queries.
 | `metadata.channel_agreement` | float | Agreement signal between lexical and semantic channels (0.0-1.0). |
 | `metadata.query_intent_confidence` | float | Confidence of intent classification (0.0-1.0). |
 | `metadata.intent_escalation_hint` | string/null | Agent hint when intent confidence is low (for example retry intent as symbol/path/NL). |
-| `metadata.semantic_fallback` | bool | `true` when the embedding model was unavailable and results are purely lexical. |
+| `metadata.semantic_fallback` | bool | `true` when semantic retrieval failed and runtime fell back to lexical-only results. |
+| `metadata.semantic_degraded` | bool | Normalized degraded-state flag; currently `semantic_degraded = semantic_fallback`. |
 
 ### Semantic Search Behavior by Intent
 

@@ -170,7 +170,7 @@ the response includes `low_confidence: true` and a non-empty `suggested_action`.
   logging a warning that initial query may be slow.
 - What happens when the embedding model is unavailable?
   Semantic search is silently disabled for that query; results are purely lexical
-  with `semantic_fallback: true` in metadata.
+  with `semantic_fallback: true` and `semantic_degraded: true` in metadata.
 - What happens when `semantic_ratio` is set to a value outside 0.0-1.0?
   The value is clamped to the valid range and a warning is logged.
 - What happens when the rerank provider returns fewer results than sent?
