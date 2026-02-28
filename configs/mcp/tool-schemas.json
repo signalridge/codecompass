@@ -1,10 +1,10 @@
 {
-  "generated_at": "2026-02-27T07:02:47Z",
+  "generated_at": "2026-02-28T16:13:33Z",
   "generator": "scripts/generate_mcp_tool_schemas.sh",
   "source": "tools/list",
   "binary": "cruxe",
   "binary_version": "0.1.0",
-  "tool_count": 18,
+  "tool_count": 19,
   "tools": [
     {
       "description": "Trigger full or incremental indexing of a registered project.",
@@ -58,6 +58,8 @@
           },
           "confidence_threshold": {
             "description": "Optional low-confidence threshold override (0.0-1.0).",
+            "maximum": 1.0,
+            "minimum": 0.0,
             "type": "number"
           },
           "detail_level": {
@@ -103,8 +105,21 @@
             "description": "Branch/ref scope",
             "type": "string"
           },
+          "role": {
+            "description": "Filter by semantic symbol role",
+            "enum": [
+              "type",
+              "callable",
+              "value",
+              "namespace",
+              "alias"
+            ],
+            "type": "string"
+          },
           "semantic_ratio": {
             "description": "Optional semantic blend ratio cap override (0.0-1.0). Runtime may reduce actual usage.",
+            "maximum": 1.0,
+            "minimum": 0.0,
             "type": "number"
           },
           "workspace": {
@@ -172,6 +187,17 @@
           },
           "ref": {
             "description": "Branch/ref scope",
+            "type": "string"
+          },
+          "role": {
+            "description": "Filter by semantic role; intersects with kind when both are provided.",
+            "enum": [
+              "type",
+              "callable",
+              "value",
+              "namespace",
+              "alias"
+            ],
             "type": "string"
           },
           "workspace": {
@@ -424,6 +450,86 @@
       "name": "get_code_context"
     },
     {
+      "description": "Build a deterministic, token-budgeted context pack with provenance and diagnostics.",
+      "inputSchema": {
+        "properties": {
+          "budget_tokens": {
+            "default": 4000,
+            "description": "Token budget for the pack payload (default: 4000).",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "language": {
+            "description": "Optional language filter.",
+            "type": "string"
+          },
+          "max_candidates": {
+            "default": 72,
+            "description": "Upper bound for retrieval candidates before budgeting (default: 72).",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "mode": {
+            "default": "full",
+            "description": "Pack shaping mode: full context or aider-style minimal edit context.",
+            "enum": [
+              "full",
+              "edit_minimal",
+              "aider_minimal"
+            ],
+            "type": "string"
+          },
+          "query": {
+            "description": "Retrieval query used to assemble the context pack.",
+            "type": "string"
+          },
+          "ref": {
+            "description": "Branch/ref scope.",
+            "type": "string"
+          },
+          "section_caps": {
+            "description": "Optional per-section target caps before overflow fallback.",
+            "properties": {
+              "config": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "definitions": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "deps": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "docs": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "tests": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "usages": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "workspace": {
+            "description": "Absolute path to target workspace. Default: server's default project.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "build_context_pack"
+    },
+    {
       "description": "Suggest next tool calls when prior results are low-confidence or empty.",
       "inputSchema": {
         "properties": {
@@ -449,6 +555,10 @@
           "previous_results": {
             "description": "Result summary from the previous query (top_score, total_candidates, query_intent, etc.).",
             "type": "object"
+          },
+          "ref": {
+            "description": "Branch/ref scope.",
+            "type": "string"
           },
           "workspace": {
             "description": "Absolute path to target workspace. Default: server's default project.",
@@ -527,7 +637,14 @@
       "inputSchema": {
         "properties": {
           "kind": {
-            "description": "Optional edge type filter (imports, calls, implements, extends, references).",
+            "description": "Optional edge type filter.",
+            "enum": [
+              "imports",
+              "calls",
+              "implements",
+              "extends",
+              "references"
+            ],
             "type": "string"
           },
           "limit": {
