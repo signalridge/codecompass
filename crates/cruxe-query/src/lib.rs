@@ -1,6 +1,7 @@
 pub mod call_graph;
 pub mod confidence;
 pub mod context;
+pub mod context_pack;
 pub mod detail;
 pub mod diff_context;
 pub mod explain_ranking;

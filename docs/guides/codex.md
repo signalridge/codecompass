@@ -39,8 +39,21 @@ cruxe serve-mcp --workspace <absolute-project-path>
 
 1. Start with `search_code` for broad context.
 2. Narrow with `locate_symbol`.
-3. Use `find_references`/`get_call_graph` before editing related code.
-4. Re-run `sync_repo` after local commits.
+3. Build an agent-ready bundle with `build_context_pack`:
+
+   ```json
+   {
+     "name": "build_context_pack",
+     "arguments": {
+       "query": "validate_token",
+       "budget_tokens": 500,
+       "mode": "edit_minimal"
+     }
+   }
+   ```
+
+4. Use `find_references`/`get_call_graph` before editing related code.
+5. Re-run `sync_repo` after local commits.
 
 ## Troubleshooting
 
