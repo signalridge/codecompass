@@ -42,6 +42,7 @@ use crate::{
 /// Used by both per-index RRF in `search_code_with_options` and channel-level
 /// RRF in `hybrid::blend_hybrid_results`.
 pub(crate) const RRF_K: f64 = 60.0;
+const SEARCH_SCORE_TOLERANCE: f64 = 1e-9;
 
 /// A search result from search_code.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1051,11 +1052,11 @@ fn apply_confidence_weighted_structural_boost(
         else {
             continue;
         };
-        if max_weighted <= f64::EPSILON {
+        if max_weighted <= SEARCH_SCORE_TOLERANCE {
             continue;
         }
 
-        let raw_centrality = if max_raw <= f64::EPSILON {
+        let raw_centrality = if max_raw <= SEARCH_SCORE_TOLERANCE {
             0.0
         } else {
             (stats.raw_source_count / max_raw).clamp(0.0, 1.0)
@@ -1155,10 +1156,10 @@ fn apply_confidence_weighted_structural_boost(
 }
 
 fn lexical_precedence_tier(exact_match_boost: f64, qualified_name_boost: f64) -> u8 {
-    if exact_match_boost > f64::EPSILON {
+    if exact_match_boost > SEARCH_SCORE_TOLERANCE {
         return 2;
     }
-    if qualified_name_boost > f64::EPSILON {
+    if qualified_name_boost > SEARCH_SCORE_TOLERANCE {
         return 1;
     }
     0
@@ -1278,6 +1279,7 @@ fn load_symbol_structural_stats(
     Ok(stats)
 }
 
+#[cfg(test)]
 fn semantic_fanout_limits(limit: usize, search_config: &CoreSearchConfig) -> (usize, usize, usize) {
     let semantic_limit = limit
         .saturating_mul(search_config.semantic.semantic_limit_multiplier)
@@ -2810,7 +2812,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!((response.metadata.confidence_threshold - 0.91).abs() < f64::EPSILON);
+        assert!((response.metadata.confidence_threshold - 0.91).abs() < SEARCH_SCORE_TOLERANCE);
     }
 
     #[test]

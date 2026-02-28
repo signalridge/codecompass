@@ -1,7 +1,8 @@
 # adaptive-query-plan Specification
 
 ## Purpose
-TBD - created by archiving change adaptive-query-plan. Update Purpose after archive.
+Define deterministic adaptive plan selection and downgrade behavior so query execution balances quality, latency, and runtime availability with observable reason codes.
+
 ## Requirements
 ### Requirement: Query execution MUST select a deterministic retrieval plan
 Runtime MUST select one canonical plan for each query using deterministic selector logic.

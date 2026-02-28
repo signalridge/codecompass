@@ -1,7 +1,8 @@
 # edge-confidence-weighting Specification
 
 ## Purpose
-TBD - created by archiving change edge-confidence-weighting. Update Purpose after archive.
+Define confidence semantics for relation edges and require confidence-weighted structural ranking so graph boosts favor high-quality resolved relationships over noisy hubs.
+
 ## Requirements
 ### Requirement: Relation edges MUST carry confidence semantics
 Each persisted relation edge MUST have deterministic confidence semantics derived from provider/outcome quality.

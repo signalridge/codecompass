@@ -1,7 +1,8 @@
 # ranking-signal-budget-contract Specification
 
 ## Purpose
-TBD - created by archiving change ranking-signal-budget-contract. Update Purpose after archive.
+Define bounded per-signal ranking budgets and lexical-dominance precedence guards so ranking remains explainable, configurable, and stable under noisy secondary signals.
+
 ## Requirements
 ### Requirement: Ranking signals MUST use bounded contribution budgets
 Each ranking signal MUST be evaluated with explicit contribution bounds.

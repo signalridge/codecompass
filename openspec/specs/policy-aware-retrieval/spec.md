@@ -1,7 +1,8 @@
 # policy-aware-retrieval Specification
 
 ## Purpose
-TBD - created by archiving change policy-aware-retrieval. Update Purpose after archive.
+Define deterministic retrieval governance modes, policy filtering, and redaction controls so emitted search/context payloads obey safety constraints with auditable outcomes.
+
 ## Requirements
 ### Requirement: Retrieval MUST enforce policy profiles deterministically
 Retrieval execution MUST support deterministic policy profiles: `strict`, `balanced`, `off`.

@@ -1,7 +1,8 @@
 # retrieval-eval-gate Specification
 
 ## Purpose
-TBD - created by archiving change retrieval-eval-gate. Update Purpose after archive.
+Define deterministic retrieval evaluation suites and gate verdict rules so quality and latency regressions are caught consistently before release.
+
 ## Requirements
 ### Requirement: Deterministic retrieval evaluation suite
 The system MUST provide a deterministic retrieval evaluation suite format that can be replayed across refs and environments.

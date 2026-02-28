@@ -74,12 +74,12 @@ jobs:
       - name: Build cruxe CLI
         if: steps.changes.outputs.retrieval == 'true'
         run: cargo build -p cruxe
-      - name: Run retrieval gate (rollout dry-run)
+      - name: Run retrieval gate
         if: steps.changes.outputs.retrieval == 'true'
         env:
           CRUXE_ENABLE_FASTEMBED_RUNTIME: "0"
         run: |
-          ./benchmarks/retrieval/run_retrieval_gate.sh --workspace testdata/fixtures/rust-sample --output target/retrieval-eval-report.json --dry-run
+          ./benchmarks/retrieval/run_retrieval_gate.sh --workspace testdata/fixtures/rust-sample --output target/retrieval-eval-report.json
       - name: Upload retrieval gate report
         if: steps.changes.outputs.retrieval == 'true'
         uses: actions/upload-artifact@v4
