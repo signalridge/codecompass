@@ -664,7 +664,7 @@ pub fn search_code_with_options(
         semantic_triggered: semantic_state.semantic_triggered,
         semantic_skipped_reason: semantic_state.semantic_skipped_reason,
         semantic_fallback: semantic_state.semantic_fallback,
-        semantic_degraded: semantic_state.semantic_fallback,
+        semantic_degraded: semantic_state.semantic_fallback || semantic_budget_exhausted,
         semantic_limit_used: effective_plan_budget.semantic_limit,
         lexical_fanout_used: effective_plan_budget.lexical_fanout,
         semantic_fanout_used: effective_plan_budget.semantic_fanout,
