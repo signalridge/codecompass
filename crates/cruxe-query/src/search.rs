@@ -866,10 +866,38 @@ fn apply_confidence_weighted_structural_boost(
         ));
     }
 
+    let lexical_precedence_by_result_id = ranking_reasons
+        .as_deref()
+        .map(|reasons| {
+            reasons
+                .iter()
+                .map(|reason| {
+                    (
+                        reason.result_id.clone(),
+                        lexical_precedence_tier(
+                            reason.exact_match_boost,
+                            reason.qualified_name_boost,
+                        ),
+                    )
+                })
+                .collect::<HashMap<String, u8>>()
+        })
+        .unwrap_or_default();
+
     results.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        lexical_precedence_by_result_id
+            .get(&b.result_id)
+            .unwrap_or(&0)
+            .cmp(
+                lexical_precedence_by_result_id
+                    .get(&a.result_id)
+                    .unwrap_or(&0),
+            )
+            .then_with(|| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .then_with(|| a.result_id.cmp(&b.result_id))
     });
     if let Some(reasons) = ranking_reasons {
@@ -895,11 +923,22 @@ fn apply_confidence_weighted_structural_boost(
     diagnostics.confidence_coverage = if diagnostics.total_edges == 0 {
         1.0
     } else {
-        ((diagnostics.high_edges + diagnostics.medium_edges) as f64 / diagnostics.total_edges as f64)
+        ((diagnostics.high_edges + diagnostics.medium_edges) as f64
+            / diagnostics.total_edges as f64)
             .clamp(0.0, 1.0)
     };
 
     Ok(Some(diagnostics))
+}
+
+fn lexical_precedence_tier(exact_match_boost: f64, qualified_name_boost: f64) -> u8 {
+    if exact_match_boost > f64::EPSILON {
+        return 2;
+    }
+    if qualified_name_boost > f64::EPSILON {
+        return 1;
+    }
+    0
 }
 
 fn rebuild_ranking_reasons(
@@ -1874,6 +1913,80 @@ mod tests {
         assert_eq!(
             results[0].result_id, "res-trusted",
             "trusted high-confidence edge should outrank noisy low-confidence hub"
+        );
+    }
+
+    #[test]
+    fn structural_boost_keeps_exact_match_precedence_when_reasons_present() {
+        let dir = tempdir().unwrap();
+        let conn = db::open_connection(&dir.path().join("state.db")).unwrap();
+        schema::create_tables(&conn).unwrap();
+
+        // Non-exact candidate receives strong structural support.
+        for idx in 0..12 {
+            insert_symbol_edge_fixture(
+                &conn,
+                "stable-nonexact",
+                format!("src/nonexact_{idx}.rs").as_str(),
+                "high",
+                1.0,
+            );
+        }
+
+        let mut results = vec![
+            make_symbol_result("res-exact", "stable-exact", 1.0),
+            make_symbol_result("res-nonexact", "stable-nonexact", 1.0),
+        ];
+        let mut reasons = vec![
+            RankingReasons {
+                result_index: 0,
+                result_id: "res-exact".to_string(),
+                exact_match_boost: 1.0,
+                qualified_name_boost: 0.0,
+                path_affinity: 0.0,
+                definition_boost: 0.0,
+                kind_match: 0.0,
+                test_file_penalty: 0.0,
+                confidence_structural_boost: 0.0,
+                structural_weighted_centrality: 0.0,
+                structural_raw_centrality: 0.0,
+                structural_guardrail_multiplier: 1.0,
+                confidence_coverage: 1.0,
+                bm25_score: 1.0,
+                final_score: 1.0,
+            },
+            RankingReasons {
+                result_index: 1,
+                result_id: "res-nonexact".to_string(),
+                exact_match_boost: 0.0,
+                qualified_name_boost: 0.0,
+                path_affinity: 0.0,
+                definition_boost: 0.0,
+                kind_match: 0.0,
+                test_file_penalty: 0.0,
+                confidence_structural_boost: 0.0,
+                structural_weighted_centrality: 0.0,
+                structural_raw_centrality: 0.0,
+                structural_guardrail_multiplier: 1.0,
+                confidence_coverage: 1.0,
+                bm25_score: 1.0,
+                final_score: 1.0,
+            },
+        ];
+        let mut warnings = Vec::new();
+
+        apply_confidence_weighted_structural_boost(
+            Some(&conn),
+            "main",
+            &mut results,
+            Some(&mut reasons),
+            &mut warnings,
+        )
+        .unwrap();
+
+        assert_eq!(
+            results[0].result_id, "res-exact",
+            "structural boost must not reorder exact-match candidates below non-exact matches"
         );
     }
 

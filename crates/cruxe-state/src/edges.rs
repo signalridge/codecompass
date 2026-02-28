@@ -1,5 +1,5 @@
-use cruxe_core::error::StateError;
 use cruxe_core::edge_confidence::assign_edge_confidence;
+use cruxe_core::error::StateError;
 use cruxe_core::types::{CallEdge, SymbolEdge};
 use rusqlite::{Connection, Statement, ToSql, params, params_from_iter};
 use std::sync::atomic::{AtomicU64, Ordering};

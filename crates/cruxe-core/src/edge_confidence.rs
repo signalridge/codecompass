@@ -68,10 +68,7 @@ pub fn looks_external_reference(name: &str) -> bool {
         || looks_likely_external_rust_root
 }
 
-pub fn infer_resolution_outcome(
-    to_symbol_id: Option<&str>,
-    to_name: Option<&str>,
-) -> &'static str {
+pub fn infer_resolution_outcome(to_symbol_id: Option<&str>, to_name: Option<&str>) -> &'static str {
     if to_symbol_id
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false)
@@ -156,10 +153,16 @@ mod tests {
     #[test]
     fn canonical_confidence_bucket_supports_legacy_labels() {
         assert_eq!(canonical_confidence_bucket("high"), Some(CONFIDENCE_HIGH));
-        assert_eq!(canonical_confidence_bucket("medium"), Some(CONFIDENCE_MEDIUM));
+        assert_eq!(
+            canonical_confidence_bucket("medium"),
+            Some(CONFIDENCE_MEDIUM)
+        );
         assert_eq!(canonical_confidence_bucket("low"), Some(CONFIDENCE_LOW));
         assert_eq!(canonical_confidence_bucket("static"), Some(CONFIDENCE_HIGH));
-        assert_eq!(canonical_confidence_bucket("heuristic"), Some(CONFIDENCE_LOW));
+        assert_eq!(
+            canonical_confidence_bucket("heuristic"),
+            Some(CONFIDENCE_LOW)
+        );
     }
 
     #[test]
