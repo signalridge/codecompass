@@ -33,6 +33,17 @@ struct BudgetedScoreBreakdown {
     precedence_audit: RankingPrecedenceAudit,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RawSignalInputs {
+    bm25: f64,
+    exact_match: f64,
+    qualified_name: f64,
+    path_affinity: f64,
+    definition_boost: f64,
+    kind_match: f64,
+    test_file_penalty: f64,
+}
+
 impl BudgetedScoreBreakdown {
     fn final_score(&self) -> f64 {
         self.bm25.effective
@@ -199,13 +210,15 @@ fn rerank_inner(
         }
 
         let breakdown = budgeted_breakdown(
-            bm25_score,
-            exact_match_raw,
-            qualified_name_raw,
-            path_affinity_raw,
-            definition_boost_raw,
-            kind_match_raw,
-            test_file_penalty_raw,
+            RawSignalInputs {
+                bm25: bm25_score,
+                exact_match: exact_match_raw,
+                qualified_name: qualified_name_raw,
+                path_affinity: path_affinity_raw,
+                definition_boost: definition_boost_raw,
+                kind_match: kind_match_raw,
+                test_file_penalty: test_file_penalty_raw,
+            },
             budgets,
         );
         result.score = breakdown.final_score() as f32;
@@ -228,13 +241,11 @@ fn rerank_inner(
             .then_with(|| results[a].result_id.cmp(&results[b].result_id))
     });
 
-    let sorted_results: Vec<SearchResult> = sort_order
-        .iter()
-        .map(|&orig_idx| results[orig_idx].clone())
-        .collect();
-    for (slot, sorted) in results.iter_mut().zip(sorted_results.into_iter()) {
-        *slot = sorted;
+    let mut old_to_new = vec![0usize; results.len()];
+    for (new_idx, &old_idx) in sort_order.iter().enumerate() {
+        old_to_new[old_idx] = new_idx;
     }
+    reorder_in_place(results, old_to_new);
 
     if !collect_reasons {
         return Vec::new();
@@ -288,13 +299,15 @@ pub fn locate_ranking_reasons_with_budget(
             let kind_match_raw = kind_weight(&r.kind) + query_intent_boost(query, &r.kind);
             let test_file_penalty_raw = test_file_penalty(&r.path);
             budgeted_breakdown(
-                bm25_score,
-                exact_match_raw,
-                qualified_name_raw,
-                path_affinity_raw,
-                definition_boost_raw,
-                kind_match_raw,
-                test_file_penalty_raw,
+                RawSignalInputs {
+                    bm25: bm25_score,
+                    exact_match: exact_match_raw,
+                    qualified_name: qualified_name_raw,
+                    path_affinity: path_affinity_raw,
+                    definition_boost: definition_boost_raw,
+                    kind_match: kind_match_raw,
+                    test_file_penalty: test_file_penalty_raw,
+                },
                 budgets,
             )
             .to_reason(idx)
@@ -321,24 +334,17 @@ pub fn to_basic_ranking_reasons(reasons: &[RankingReasons]) -> Vec<BasicRankingR
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
 fn budgeted_breakdown(
-    bm25_raw: f64,
-    exact_match_raw: f64,
-    qualified_name_raw: f64,
-    path_affinity_raw: f64,
-    definition_boost_raw: f64,
-    kind_match_raw: f64,
-    test_file_penalty_raw: f64,
+    raw: RawSignalInputs,
     budgets: &RankingSignalBudgetConfig,
 ) -> BudgetedScoreBreakdown {
-    let bm25 = score_without_clamp(bm25_raw);
-    let exact_match = score_with_budget(exact_match_raw, &budgets.exact_match);
-    let qualified_name = score_with_budget(qualified_name_raw, &budgets.qualified_name);
-    let mut path_affinity = score_with_budget(path_affinity_raw, &budgets.path_affinity);
-    let mut definition_boost = score_with_budget(definition_boost_raw, &budgets.definition_boost);
-    let mut kind_match = score_with_budget(kind_match_raw, &budgets.kind_match);
-    let test_file_penalty = score_with_budget(test_file_penalty_raw, &budgets.test_file_penalty);
+    let bm25 = score_without_clamp(raw.bm25);
+    let exact_match = score_with_budget(raw.exact_match, &budgets.exact_match);
+    let qualified_name = score_with_budget(raw.qualified_name, &budgets.qualified_name);
+    let mut path_affinity = score_with_budget(raw.path_affinity, &budgets.path_affinity);
+    let mut definition_boost = score_with_budget(raw.definition_boost, &budgets.definition_boost);
+    let mut kind_match = score_with_budget(raw.kind_match, &budgets.kind_match);
+    let test_file_penalty = score_with_budget(raw.test_file_penalty, &budgets.test_file_penalty);
 
     let exact_match_present = exact_match.effective > f64::EPSILON;
     let mut lexical_dominance_applied = false;
@@ -416,6 +422,17 @@ fn positive_secondary_total(path: SignalScore, definition: SignalScore, kind: Si
 
 fn scale_positive(value: f64, scale: f64) -> f64 {
     if value > 0.0 { value * scale } else { value }
+}
+
+fn reorder_in_place<T>(items: &mut [T], mut old_to_new: Vec<usize>) {
+    debug_assert_eq!(items.len(), old_to_new.len());
+    for index in 0..items.len() {
+        while old_to_new[index] != index {
+            let target = old_to_new[index];
+            items.swap(index, target);
+            old_to_new.swap(index, target);
+        }
+    }
 }
 
 #[cfg(test)]
