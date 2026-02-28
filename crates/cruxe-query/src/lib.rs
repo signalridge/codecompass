@@ -16,6 +16,7 @@ pub mod planner;
 pub mod ranking;
 pub mod related;
 pub mod rerank;
+pub mod retrieval_eval;
 mod scoring;
 pub mod search;
 pub mod semantic_advisor;

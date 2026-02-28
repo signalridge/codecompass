@@ -104,6 +104,7 @@ cruxe sync [--workspace PATH] [--force]                       Incremental sync
 cruxe search <query> [--ref REF] [--lang LANG]                Search code in the index
 cruxe doctor [--path PATH]                                    Check project health
 cruxe serve-mcp [--workspace PATH] [--transport stdio|http] [--port PORT]  Start MCP server
+cruxe eval retrieval --workspace <PATH> --suite <PATH> --baseline <PATH> --policy <PATH> [--dry-run]  Run retrieval quality gate
 cruxe state export <PATH> [--workspace PATH]                  Export state bundle
 cruxe state import <PATH> [--workspace PATH]                  Import state bundle
 cruxe prune-overlays [--workspace PATH] [--older-than DAYS]   Remove stale overlays
