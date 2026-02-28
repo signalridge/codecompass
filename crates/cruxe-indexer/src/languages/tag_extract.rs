@@ -104,10 +104,17 @@ fn map_tag_to_symbol(
         None => name.clone(),
     };
 
-    // line_start from tag span (already 0-indexed row).
-    let line_start = tag.span.start.row as u32 + 1;
-    // line_end from tag span (already 0-indexed row).
-    let line_end = tag.span.end.row as u32 + 1;
+    // Prefer AST node range for definition coverage (function body lines, etc.)
+    // and only fall back to tag span when the node cannot be resolved.
+    let (line_start, line_end) = if let Some(n) = node {
+        (
+            n.start_position().row as u32 + 1,
+            n.end_position().row as u32 + 1,
+        )
+    } else {
+        // tag span is already 0-indexed row.
+        (tag.span.start.row as u32 + 1, tag.span.end.row as u32 + 1)
+    };
 
     Some(ExtractedSymbol {
         name,
@@ -157,5 +164,24 @@ fn run() {}
         let (_symbols, diagnostics) =
             extract_symbols_via_tags_with_diagnostics(&tree, source, "rust", &enricher);
         assert!(diagnostics.had_parse_error);
+    }
+
+    #[test]
+    fn multiline_function_uses_ast_range_for_line_end() {
+        let source = r#"
+fn outer() {
+    inner();
+}
+
+fn inner() {}
+"#;
+        let tree = parse_file(source, "rust").expect("parse rust");
+        let enricher = RustEnricher;
+        let symbols = extract_symbols_via_tags(&tree, source, "rust", &enricher);
+        let outer = symbols.iter().find(|s| s.name == "outer").expect("outer");
+        assert!(
+            outer.line_end > outer.line_start,
+            "line range should cover multiline function body"
+        );
     }
 }
