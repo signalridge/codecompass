@@ -366,10 +366,7 @@ mod tests {
             Git2VcsAdapter::short_ref_name("refs/heads/feat/auth"),
             "feat/auth"
         );
-        assert_eq!(
-            Git2VcsAdapter::short_ref_name("refs/tags/v1.2.3"),
-            "v1.2.3"
-        );
+        assert_eq!(Git2VcsAdapter::short_ref_name("refs/tags/v1.2.3"), "v1.2.3");
         assert_eq!(
             Git2VcsAdapter::short_ref_name("refs/remotes/origin/main"),
             "main"
