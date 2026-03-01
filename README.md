@@ -232,4 +232,4 @@ CRUXE_ENABLE_FASTEMBED_RUNTIME=0 cargo test --workspace --all-features
 
 ## License
 
-MIT
+Mozilla Public License 2.0 (MPL-2.0)
